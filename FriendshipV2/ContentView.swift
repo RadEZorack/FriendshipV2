@@ -31,8 +31,16 @@ struct ARViewContainer: UIViewRepresentable {
         // Enable plane detection
         config.planeDetection = [.horizontal, .vertical]
         
+        // Enable scene depth for occlusion (requires LiDAR)
+        if type(of: config).supportsFrameSemantics(.sceneDepth) {
+            config.frameSemantics.insert(.sceneDepth)
+        }
+        
         // Run the AR session
         arView.session.run(config)
+        
+        // Enable occlusion from people and scene depth
+        arView.environment.sceneUnderstanding.options.insert(.occlusion)
         
         // Add coordinator as delegate
         context.coordinator.arView = arView
