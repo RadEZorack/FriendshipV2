@@ -8,6 +8,7 @@
 import SwiftUI
 import RealityKit
 import ARKit
+import ModelIO
 
 struct ContentView: View {
     var body: some View {
@@ -96,7 +97,8 @@ struct ARViewContainer: UIViewRepresentable {
     
     class Coordinator: NSObject, ARSessionDelegate {
         weak var arView: ARView?
-        var placedCube: ModelEntity?
+        var placedModel: Entity?
+        var placedAnchor: AnchorEntity?
         
         @objc func handleTap() {
             guard let arView = arView else { return }
@@ -113,47 +115,88 @@ struct ARViewContainer: UIViewRepresentable {
                 if let raycastQuery = arView.makeRaycastQuery(from: centerPoint, allowing: .existingPlaneGeometry, alignment: .any) {
                     let raycastResults = arView.session.raycast(raycastQuery)
                     if let firstResult = raycastResults.first {
-                        placeCube(at: firstResult.worldTransform, in: arView)
+                        placeModel(at: firstResult.worldTransform, in: arView)
                         return
                     }
                 }
             } else if let firstResult = results.first {
-                placeCube(at: firstResult.worldTransform, in: arView)
+                placeModel(at: firstResult.worldTransform, in: arView)
             }
         }
         
-        func placeCube(at transform: simd_float4x4, in arView: ARView) {
-            // Remove previously placed cube
-            if let previousCube = placedCube {
-                previousCube.removeFromParent()
+        func placeModel(at transform: simd_float4x4, in arView: ARView) {
+            // Remove previously placed content (anchor and model)
+            if let previousAnchor = placedAnchor {
+                previousAnchor.removeFromParent()
+                placedAnchor = nil
+                placedModel = nil
+            } else if let previousModel = placedModel {
+                previousModel.removeFromParent()
+                placedModel = nil
             }
-            
-            // Create a cube mesh
-            let mesh = MeshResource.generateBox(size: 0.1) // 10cm cube
-            
-            // Create a material with a color
-            var material = SimpleMaterial()
-            material.color = .init(tint: .systemBlue.withAlphaComponent(0.8))
-            material.metallic = .init(floatLiteral: 0.5)
-            material.roughness = .init(floatLiteral: 0.3)
-            
-            // Create the model entity
-            let cubeEntity = ModelEntity(mesh: mesh, materials: [material])
-            
-            // Create an anchor entity
-            let anchorEntity = AnchorEntity(world: transform)
-            anchorEntity.addChild(cubeEntity)
-            
-            // Add to the scene
-            arView.scene.addAnchor(anchorEntity)
-            
-            // Store reference to the cube
-            placedCube = cubeEntity
-            
-            // Add a subtle animation
-            var transform = cubeEntity.transform
-            transform.translation.y += 0.05
-            cubeEntity.move(to: transform, relativeTo: anchorEntity, duration: 0.3, timingFunction: .easeOut)
+
+            Task {
+                do {
+                    // Load USDZ file from bundle
+                    guard let modelURL = Bundle.main.url(forResource: "Animation_FunnyDancing_01", withExtension: "usdz") else {
+                        print("Could not find USDZ file in bundle")
+                        return
+                    }
+                    print("Loading USDZ model from: \(modelURL.path)")
+
+                    let rootEntity = try await Entity(contentsOf: modelURL)
+
+                    // Try to use a ModelEntity, even if the root is a generic container
+                    let modelEntity: ModelEntity
+                    if let asModel = rootEntity as? ModelEntity {
+                        modelEntity = asModel
+                    } else if let found = findFirstModelEntity(in: rootEntity) {
+                        modelEntity = found
+                    } else {
+                        print("Could not find a ModelEntity in loaded content hierarchy")
+                        return
+                    }
+                    print("✓ Successfully resolved a ModelEntity from loaded content!")
+                    
+                    // Rotate model 90 degrees around Y axis
+                    modelEntity.orientation = simd_quatf(angle: -.pi / 2, axis: [1, 0, 0])
+
+                    // Create an anchor entity
+                    let anchorEntity = AnchorEntity(world: transform)
+                    anchorEntity.addChild(modelEntity)
+
+                    // Add to the scene
+                    arView.scene.addAnchor(anchorEntity)
+
+                    // Store references to the model and its anchor
+                    self.placedModel = modelEntity
+                    self.placedAnchor = anchorEntity
+
+                    // Play any animations in the model
+                    if let animation = modelEntity.availableAnimations.first {
+                        modelEntity.playAnimation(animation.repeat())
+                    }
+
+                    // Add a subtle placement animation
+                    var entityTransform = modelEntity.transform
+                    entityTransform.translation.y -= 0.1
+                    modelEntity.transform = entityTransform
+
+                    entityTransform.translation.y += 0.1
+                    modelEntity.move(to: entityTransform, relativeTo: anchorEntity, duration: 0.3, timingFunction: .easeOut)
+
+                } catch {
+                    print("Failed to load model: \(error)")
+                }
+            }
+        }
+        
+        private func findFirstModelEntity(in entity: Entity) -> ModelEntity? {
+            if let model = entity as? ModelEntity { return model }
+            for child in entity.children {
+                if let found = findFirstModelEntity(in: child) { return found }
+            }
+            return nil
         }
         
         func session(_ session: ARSession, didUpdate frame: ARFrame) {
