@@ -9,6 +9,9 @@ final class AuthService: NSObject, ObservableObject {
 
     @Published private(set) var isAuthenticated: Bool = false
     @Published private(set) var userDisplayName: String?
+    
+    // Store email temporarily for passkey authentication
+    var pendingPasskeyEmail: String?
 
     private let backendBaseURL = URL(string: "https://dev3.augmego.com")!
     
@@ -50,16 +53,34 @@ final class AuthService: NSObject, ObservableObject {
 
     // MARK: - Passkey Sign In (WebAuthn)
     
-    /// Begins a passkey sign-in by retrieving a challenge and relying party ID from the backend.
-    /// - Returns: A tuple containing the challenge bytes and the relying party identifier.
-    /// - Note: This placeholder uses a mock challenge. Replace with a call to your backend if available.
-    func beginPasskeySignIn() async throws -> (challenge: Data, rpId: String) {
-        // If you already have an endpoint that returns WebAuthn authentication options,
-        // you should call it here and extract `publicKey.challenge` and `rpId`.
-        // For now, return a placeholder so LoginView can compile and you can wire this later.
-        let rpId = URL(string: "https://dev3.augmego.com")!.host ?? "dev3.augmego.com"
-        let mockChallenge = "placeholder-challenge".data(using: .utf8)!
-        return (challenge: mockChallenge, rpId: rpId)
+    /// Begins a passkey sign-in by retrieving authentication options from the backend.
+    /// - Parameter email: The user's email address to look up their passkeys
+    /// - Returns: A tuple containing the challenge bytes and the relying party identifier
+    func beginPasskeySignIn(email: String) async throws -> (challenge: Data, rpId: String) {
+        // Get authentication options from the API
+        let options = try await getPasskeyAuthenticationOptions(email: email)
+        
+        // Extract challenge (base64url encoded string) and decode it
+        guard let challengeB64 = options["challenge"] as? String else {
+            throw NSError(domain: "AuthService", code: -1, userInfo: [NSLocalizedDescriptionKey: "Missing challenge in API response"])
+        }
+        
+        // Decode base64url challenge to Data
+        guard let challengeData = Data(base64URLEncoded: challengeB64) else {
+            throw NSError(domain: "AuthService", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid challenge format"])
+        }
+        
+        // Extract rpId from the response, or derive from backend URL
+        // The rpId should be just the domain (e.g., "dev3.augmego.com"), not the full URL
+        let rpId: String
+        if let rpIdFromResponse = options["rpId"] as? String {
+            rpId = rpIdFromResponse
+        } else {
+            // Fallback to extracting domain from backend URL
+            rpId = backendBaseURL.host ?? "dev3.augmego.com"
+        }
+        
+        return (challenge: challengeData, rpId: rpId)
     }
     
     // Get authentication options for passkey sign in
@@ -209,14 +230,19 @@ extension AuthService: ASAuthorizationControllerDelegate {
             }
         } else if let assertion = authorization.credential as? ASAuthorizationPlatformPublicKeyCredentialAssertion {
             // For passkey authentication, we need the user's email
-            // This should be obtained from the user or stored from a previous registration
-            // For now, we'll need to handle this in the UI layer where email can be collected
             Task { @MainActor in
-                // Note: Email is required for passkey authentication
-                // You'll need to collect this from the user or store it from registration
-                // This is a placeholder - you should modify this to get email from your UI
-                print("Passkey assertion received, but email is required for authentication")
-                // You can call: try await self.completePasskeySignIn(email: userEmail, assertion: assertion)
+                guard let email = self.pendingPasskeyEmail else {
+                    print("Passkey assertion received, but email is missing")
+                    return
+                }
+                
+                do {
+                    try await self.completePasskeySignIn(email: email, assertion: assertion)
+                    // Clear the pending email after successful authentication
+                    self.pendingPasskeyEmail = nil
+                } catch {
+                    print("Passkey authentication failed: \(error.localizedDescription)")
+                }
             }
         }
     }

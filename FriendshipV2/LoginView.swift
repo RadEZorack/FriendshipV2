@@ -5,6 +5,8 @@ struct LoginView: View {
     @ObservedObject private var auth = AuthService.shared
     @State private var isWorking = false
     @State private var errorMessage: String?
+    @State private var emailForPasskey: String = ""
+    @State private var showEmailInput = false
 
     var body: some View {
         VStack(spacing: 24) {
@@ -25,7 +27,9 @@ struct LoginView: View {
                     auth.startSignInWithApple()
                 }
 
-                Button(action: startPasskeySignIn) {
+                Button(action: {
+                    showEmailInput = true
+                }) {
                     HStack {
                         Image(systemName: "key.fill")
                         Text("Sign in with Passkey")
@@ -36,6 +40,45 @@ struct LoginView: View {
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
                 .disabled(isWorking)
+                .sheet(isPresented: $showEmailInput) {
+                    NavigationView {
+                        VStack(spacing: 20) {
+                            Text("Enter your email to sign in with a passkey")
+                                .font(.headline)
+                                .padding()
+                            
+                            TextField("Email", text: $emailForPasskey)
+                                .textFieldStyle(.roundedBorder)
+                                .keyboardType(.emailAddress)
+                                .autocapitalization(.none)
+                                .padding(.horizontal)
+                            
+                            Button("Continue") {
+                                if !emailForPasskey.isEmpty {
+                                    showEmailInput = false
+                                    startPasskeySignIn(email: emailForPasskey)
+                                    emailForPasskey = ""
+                                }
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(emailForPasskey.isEmpty)
+                            .padding()
+                            
+                            Spacer()
+                        }
+                        .padding()
+                        .navigationTitle("Passkey Sign In")
+                        .navigationBarTitleDisplayMode(.inline)
+                        .toolbar {
+                            ToolbarItem(placement: .navigationBarLeading) {
+                                Button("Cancel") {
+                                    showEmailInput = false
+                                    emailForPasskey = ""
+                                }
+                            }
+                        }
+                    }
+                }
             }
             .padding(.horizontal)
 
@@ -54,7 +97,7 @@ struct LoginView: View {
         }
     }
 
-    private func startPasskeySignIn() {
+    private func startPasskeySignIn(email: String) {
         // Capture the observed object into a strong reference so we don't interact with the property wrapper inside Task
         let authService = auth
         errorMessage = nil
@@ -62,7 +105,10 @@ struct LoginView: View {
             isWorking = true
             defer { isWorking = false }
             do {
-                let (challenge, rpId) = try await authService.beginPasskeySignIn()
+                // Store email for use in delegate callback
+                authService.pendingPasskeyEmail = email
+                
+                let (challenge, rpId) = try await authService.beginPasskeySignIn(email: email)
                 let provider = ASAuthorizationPlatformPublicKeyCredentialProvider(relyingPartyIdentifier: rpId)
                 let assertionRequest = provider.createCredentialAssertionRequest(challenge: challenge)
 
@@ -71,7 +117,7 @@ struct LoginView: View {
                 controller.presentationContextProvider = authService
                 controller.performRequests()
             } catch {
-                errorMessage = "Passkey sign-in failed to start."
+                errorMessage = "Passkey sign-in failed: \(error.localizedDescription)"
             }
         }
     }
