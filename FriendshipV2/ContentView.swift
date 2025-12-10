@@ -9,11 +9,21 @@ import SwiftUI
 import RealityKit
 import ARKit
 import ModelIO
+import AuthenticationServices
 
 struct ContentView: View {
+    @StateObject private var auth = AuthService.shared
+
     var body: some View {
-        ARViewContainer()
-            .edgesIgnoringSafeArea(.all)
+        Group {
+            if auth.isAuthenticated {
+                ARViewContainer()
+                    .edgesIgnoringSafeArea(.all)
+            } else {
+                LoginView()
+            }
+        }
+        .animation(.default, value: auth.isAuthenticated)
     }
 }
 
