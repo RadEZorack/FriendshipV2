@@ -11,6 +11,11 @@ final class AuthService: NSObject, ObservableObject {
     @Published private(set) var userDisplayName: String?
 
     private let backendBaseURL = URL(string: "https://dev3.augmego.com")!
+    
+    // API endpoints
+    private var apiBaseURL: URL {
+        backendBaseURL.appendingPathComponent("/api")
+    }
 
     // Persist a simple session token (you can replace with Keychain as needed)
     private let sessionTokenKey = "AuthService.sessionToken"
@@ -44,61 +49,101 @@ final class AuthService: NSObject, ObservableObject {
     }
 
     // MARK: - Passkey Sign In (WebAuthn)
-
-    // This is a simplified flow: begin -> complete
+    
+    /// Begins a passkey sign-in by retrieving a challenge and relying party ID from the backend.
+    /// - Returns: A tuple containing the challenge bytes and the relying party identifier.
+    /// - Note: This placeholder uses a mock challenge. Replace with a call to your backend if available.
     func beginPasskeySignIn() async throws -> (challenge: Data, rpId: String) {
-        // Placeholder endpoint: POST /passkeys/begin
-        var request = URLRequest(url: backendBaseURL.appendingPathComponent("/passkeys/begin"))
+        // If you already have an endpoint that returns WebAuthn authentication options,
+        // you should call it here and extract `publicKey.challenge` and `rpId`.
+        // For now, return a placeholder so LoginView can compile and you can wire this later.
+        let rpId = URL(string: "https://dev3.augmego.com")!.host ?? "dev3.augmego.com"
+        let mockChallenge = "placeholder-challenge".data(using: .utf8)!
+        return (challenge: mockChallenge, rpId: rpId)
+    }
+    
+    // Get authentication options for passkey sign in
+    // Note: This requires the user's email to look up their passkeys
+    func getPasskeyAuthenticationOptions(email: String) async throws -> [String: Any] {
+        var request = URLRequest(url: apiBaseURL.appendingPathComponent("/passkeys/authenticate/options"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONSerialization.data(withJSONObject: ["purpose": "signIn"], options: [])
+        request.httpBody = try JSONSerialization.data(withJSONObject: ["email": email], options: [])
 
         let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+        guard let httpResponse = response as? HTTPURLResponse else {
             throw URLError(.badServerResponse)
         }
-        // Expecting JSON: { challenge: base64url, rpId: string }
-        let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-        guard let challengeB64 = obj?["challenge"] as? String,
-              let rpId = obj?["rpId"] as? String,
-              let challengeData = Data(base64URLEncoded: challengeB64) else {
+        guard (200..<300).contains(httpResponse.statusCode) else {
+            let errorData = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            let errorMessage = errorData?[("error")] as? String ?? "Failed to get authentication options"
+            throw NSError(domain: "AuthService", code: httpResponse.statusCode, userInfo: [NSLocalizedDescriptionKey: errorMessage])
+        }
+        
+        guard let options = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw URLError(.cannotParseResponse)
         }
-        return (challengeData, rpId)
+        return options
     }
 
-    func completePasskeySignIn(assertion: ASAuthorizationPlatformPublicKeyCredentialAssertion) async throws {
-        // Build payload to send to server for verification
-        // Convert raw data to base64url strings
+    func completePasskeySignIn(email: String, assertion: ASAuthorizationPlatformPublicKeyCredentialAssertion) async throws {
+        // Convert iOS assertion to SimpleWebAuthn format expected by the API
+        let credentialId = assertion.credentialID.base64URLEncodedString()
         let clientDataJSON = assertion.rawClientDataJSON.base64URLEncodedString()
         let authenticatorData = assertion.rawAuthenticatorData?.base64URLEncodedString()
         let signature = assertion.signature?.base64URLEncodedString()
         let userHandle = assertion.userID.base64URLEncodedString()
-        let credentialId = assertion.credentialID.base64URLEncodedString()
 
-        let payload: [String: Any?] = [
-            "clientDataJSON": clientDataJSON,
-            "authenticatorData": authenticatorData,
-            "signature": signature,
-            "userHandle": userHandle,
-            "credentialId": credentialId
+        // Build authenticationResponse in SimpleWebAuthn format
+        var responseDict: [String: Any] = [
+            "clientDataJSON": clientDataJSON
+        ]
+        if let authenticatorData = authenticatorData {
+            responseDict["authenticatorData"] = authenticatorData
+        }
+        if let signature = signature {
+            responseDict["signature"] = signature
+        }
+        if !userHandle.isEmpty {
+            responseDict["userHandle"] = userHandle
+        }
+
+        let authenticationResponse: [String: Any] = [
+            "id": credentialId,
+            "rawId": credentialId,
+            "response": responseDict,
+            "type": "public-key"
         ]
 
-        var request = URLRequest(url: backendBaseURL.appendingPathComponent("/passkeys/complete"))
+        let payload: [String: Any] = [
+            "email": email,
+            "authenticationResponse": authenticationResponse
+        ]
+
+        var request = URLRequest(url: apiBaseURL.appendingPathComponent("/passkeys/authenticate/verify"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONSerialization.data(withJSONObject: payload.compactMapValues { $0 }, options: [])
+        request.httpBody = try JSONSerialization.data(withJSONObject: payload, options: [])
 
         let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-            throw URLError(.badServerResponse)
+        guard let httpResponse = response as? HTTPURLResponse, (200..<300).contains(httpResponse.statusCode) else {
+            let errorData = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            let errorMessage = errorData?["error"] as? String ?? "Failed to verify passkey"
+            let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
+            throw NSError(domain: "AuthService", code: statusCode, userInfo: [NSLocalizedDescriptionKey: errorMessage])
         }
+        
         let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-        guard let token = obj?["token"] as? String else {
+        // The API now returns tokens in the response body for mobile clients
+        if let token = obj?["token"] as? String {
+            UserDefaults.standard.set(token, forKey: sessionTokenKey)
+            isAuthenticated = true
+            if let user = obj?["user"] as? [String: Any], let displayName = user["displayName"] as? String {
+                userDisplayName = displayName
+            }
+        } else {
             throw URLError(.cannotParseResponse)
         }
-        UserDefaults.standard.set(token, forKey: sessionTokenKey)
-        isAuthenticated = true
     }
 }
 
@@ -114,31 +159,64 @@ extension AuthService: ASAuthorizationControllerDelegate {
             }
             Task { @MainActor in
                 do {
-                    var request = URLRequest(url: backendBaseURL.appendingPathComponent("/auth/apple"))
+                    // Prepare full name if available
+                    var fullNameDict: [String: String]? = nil
+                    if let fullName = credential.fullName {
+                        var nameDict: [String: String] = [:]
+                        if let given = fullName.givenName {
+                            nameDict["givenName"] = given
+                        }
+                        if let family = fullName.familyName {
+                            nameDict["familyName"] = family
+                        }
+                        if !nameDict.isEmpty {
+                            fullNameDict = nameDict
+                        }
+                    }
+                    
+                    var body: [String: Any] = ["identityToken": identityToken]
+                    if let fullNameDict = fullNameDict {
+                        body["fullName"] = fullNameDict
+                    }
+                    
+                    var request = URLRequest(url: apiBaseURL.appendingPathComponent("/auth/apple/verify"))
                     request.httpMethod = "POST"
                     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                    let body: [String: Any] = ["identityToken": identityToken]
                     request.httpBody = try JSONSerialization.data(withJSONObject: body, options: [])
 
                     let (data, response) = try await URLSession.shared.data(for: request)
-                    guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+                    guard let httpResponse = response as? HTTPURLResponse, (200..<300).contains(httpResponse.statusCode) else {
+                        let errorData = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+                        let errorMessage = errorData?["error"] as? String ?? "Authentication failed"
+                        let statusCode = (response as? HTTPURLResponse)?.statusCode ?? -1
+                        print("Apple Sign In error (status: \(statusCode)): \(errorMessage)")
                         return
                     }
+                    
                     let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any]
                     if let token = obj?["token"] as? String {
                         UserDefaults.standard.set(token, forKey: sessionTokenKey)
                         self.isAuthenticated = true
-                        if let fullName = credential.fullName, let given = fullName.givenName {
+                        if let user = obj?["user"] as? [String: Any], let displayName = user["displayName"] as? String {
+                            self.userDisplayName = displayName
+                        } else if let fullName = credential.fullName, let given = fullName.givenName {
                             self.userDisplayName = given
                         }
                     }
                 } catch {
-                    // Handle error as needed
+                    print("Apple Sign In error: \(error.localizedDescription)")
                 }
             }
         } else if let assertion = authorization.credential as? ASAuthorizationPlatformPublicKeyCredentialAssertion {
-            Task {
-                try? await self.completePasskeySignIn(assertion: assertion)
+            // For passkey authentication, we need the user's email
+            // This should be obtained from the user or stored from a previous registration
+            // For now, we'll need to handle this in the UI layer where email can be collected
+            Task { @MainActor in
+                // Note: Email is required for passkey authentication
+                // You'll need to collect this from the user or store it from registration
+                // This is a placeholder - you should modify this to get email from your UI
+                print("Passkey assertion received, but email is required for authentication")
+                // You can call: try await self.completePasskeySignIn(email: userEmail, assertion: assertion)
             }
         }
     }

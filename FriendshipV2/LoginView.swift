@@ -2,7 +2,7 @@ import SwiftUI
 import AuthenticationServices
 
 struct LoginView: View {
-    @StateObject private var auth = AuthService.shared
+    @ObservedObject private var auth = AuthService.shared
     @State private var isWorking = false
     @State private var errorMessage: String?
 
@@ -19,7 +19,7 @@ struct LoginView: View {
                     // Handled via AuthService delegate
                 })
                 .signInWithAppleButtonStyle(.black)
-                .frame(height: 50)
+                .frame(maxWidth: 375, minHeight: 50, maxHeight: 50)
                 .clipShape(RoundedRectangle(cornerRadius: 12))
                 .onTapGesture {
                     auth.startSignInWithApple()
@@ -55,17 +55,20 @@ struct LoginView: View {
     }
 
     private func startPasskeySignIn() {
+        // Capture the observed object into a strong reference so we don't interact with the property wrapper inside Task
+        let authService = auth
+        errorMessage = nil
         Task { @MainActor in
             isWorking = true
             defer { isWorking = false }
             do {
-                let (challenge, rpId) = try await auth.beginPasskeySignIn()
+                let (challenge, rpId) = try await authService.beginPasskeySignIn()
                 let provider = ASAuthorizationPlatformPublicKeyCredentialProvider(relyingPartyIdentifier: rpId)
                 let assertionRequest = provider.createCredentialAssertionRequest(challenge: challenge)
 
                 let controller = ASAuthorizationController(authorizationRequests: [assertionRequest])
-                controller.delegate = auth
-                controller.presentationContextProvider = auth
+                controller.delegate = authService
+                controller.presentationContextProvider = authService
                 controller.performRequests()
             } catch {
                 errorMessage = "Passkey sign-in failed to start."
