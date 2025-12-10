@@ -55,32 +55,67 @@ final class AuthService: NSObject, ObservableObject {
     
     /// Begins a passkey sign-in by retrieving authentication options from the backend.
     /// - Parameter email: The user's email address to look up their passkeys
-    /// - Returns: A tuple containing the challenge bytes and the relying party identifier
-    func beginPasskeySignIn(email: String) async throws -> (challenge: Data, rpId: String) {
+    /// - Returns: A tuple containing the challenge bytes, relying party identifier, and allowed credential IDs
+    func beginPasskeySignIn(email: String) async throws -> (challenge: Data, rpId: String, allowedCredentialIDs: [Data]) {
         // Get authentication options from the API
         let options = try await getPasskeyAuthenticationOptions(email: email)
         
+        // Debug: Print the options to see what we're getting
+        print("🔑 Passkey options received: \(options.keys.joined(separator: ", "))")
+        
         // Extract challenge (base64url encoded string) and decode it
         guard let challengeB64 = options["challenge"] as? String else {
+            print("❌ Missing challenge in API response. Available keys: \(options.keys.joined(separator: ", "))")
             throw NSError(domain: "AuthService", code: -1, userInfo: [NSLocalizedDescriptionKey: "Missing challenge in API response"])
         }
         
+        print("✅ Challenge received (length: \(challengeB64.count))")
+        
         // Decode base64url challenge to Data
+        // The challenge from SimpleWebAuthn is already base64url encoded
         guard let challengeData = Data(base64URLEncoded: challengeB64) else {
+            print("❌ Failed to decode challenge from base64url: \(challengeB64.prefix(20))...")
             throw NSError(domain: "AuthService", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid challenge format"])
         }
+        
+        print("✅ Challenge decoded to Data (length: \(challengeData.count) bytes)")
+        print("   Challenge hex (first 16 bytes): \(challengeData.prefix(16).map { String(format: "%02x", $0) }.joined(separator: " "))")
         
         // Extract rpId from the response, or derive from backend URL
         // The rpId should be just the domain (e.g., "dev3.augmego.com"), not the full URL
         let rpId: String
         if let rpIdFromResponse = options["rpId"] as? String {
             rpId = rpIdFromResponse
+            print("✅ Using rpId from API: \(rpId)")
         } else {
             // Fallback to extracting domain from backend URL
             rpId = backendBaseURL.host ?? "dev3.augmego.com"
+            print("⚠️ rpId not in response, using fallback: \(rpId)")
         }
         
-        return (challenge: challengeData, rpId: rpId)
+        // Extract allowCredentials array and convert credential IDs to Data
+        var allowedCredentialIDs: [Data] = []
+        if let allowCredentials = options["allowCredentials"] as? [[String: Any]] {
+            print("✅ Found \(allowCredentials.count) allowed credentials")
+            for (index, credential) in allowCredentials.enumerated() {
+                if let idString = credential["id"] as? String {
+                    if let idData = Data(base64URLEncoded: idString) {
+                        allowedCredentialIDs.append(idData)
+                        print("  ✅ Credential \(index + 1): ID decoded (length: \(idData.count) bytes)")
+                    } else {
+                        print("  ❌ Credential \(index + 1): Failed to decode ID from base64url")
+                    }
+                } else {
+                    print("  ❌ Credential \(index + 1): Missing 'id' field")
+                }
+            }
+        } else {
+            print("⚠️ No allowCredentials in response (this is OK for discovery)")
+        }
+        
+        print("✅ Returning: rpId=\(rpId), challengeLength=\(challengeData.count), credentialCount=\(allowedCredentialIDs.count)")
+        
+        return (challenge: challengeData, rpId: rpId, allowedCredentialIDs: allowedCredentialIDs)
     }
     
     // Get authentication options for passkey sign in
@@ -249,6 +284,33 @@ extension AuthService: ASAuthorizationControllerDelegate {
 
     func authorizationController(controller: ASAuthorizationController, didCompleteWithError error: Error) {
         // Handle errors from AppleID or Passkey flows
+        if let authError = error as? ASAuthorizationError {
+            let errorCode = authError.code
+            let errorDescription: String
+            
+            switch errorCode {
+            case .canceled:
+                errorDescription = "User canceled authentication"
+            case .failed:
+                errorDescription = "Authentication failed"
+            case .invalidResponse:
+                errorDescription = "Invalid response from authenticator"
+            case .notHandled:
+                errorDescription = "Request not handled"
+            case .unknown:
+                errorDescription = "Unknown error"
+            @unknown default:
+                errorDescription = "Error code: \(errorCode.rawValue)"
+            }
+            
+            print("ASAuthorizationController error: \(errorDescription) (code: \(errorCode.rawValue))")
+            
+            // Clear pending email on error
+            pendingPasskeyEmail = nil
+        } else {
+            print("ASAuthorizationController error: \(error.localizedDescription)")
+            pendingPasskeyEmail = nil
+        }
     }
 }
 

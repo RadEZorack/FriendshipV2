@@ -108,15 +108,38 @@ struct LoginView: View {
                 // Store email for use in delegate callback
                 authService.pendingPasskeyEmail = email
                 
-                let (challenge, rpId) = try await authService.beginPasskeySignIn(email: email)
+                let (challenge, rpId, allowedCredentialIDs) = try await authService.beginPasskeySignIn(email: email)
+                
+                print("🔐 Creating passkey assertion request:")
+                print("   rpId: \(rpId)")
+                print("   challenge length: \(challenge.count) bytes")
+                print("   allowed credentials count: \(allowedCredentialIDs.count)")
+                
                 let provider = ASAuthorizationPlatformPublicKeyCredentialProvider(relyingPartyIdentifier: rpId)
                 let assertionRequest = provider.createCredentialAssertionRequest(challenge: challenge)
+                
+                // Set allowed credential IDs if provided
+                if !allowedCredentialIDs.isEmpty {
+                    let descriptors = allowedCredentialIDs.map { credentialID in
+                        ASAuthorizationPlatformPublicKeyCredentialDescriptor(credentialID: credentialID)
+                    }
+                    assertionRequest.allowedCredentials = descriptors
+                    print("   ✅ Set \(descriptors.count) allowed credential descriptors")
+                } else {
+                    print("   ⚠️ No allowed credentials - using discovery mode")
+                }
+                
+                // Set user verification preference
+                assertionRequest.userVerificationPreference = .preferred
+                
+                print("   ✅ Request configured, performing authorization...")
 
                 let controller = ASAuthorizationController(authorizationRequests: [assertionRequest])
                 controller.delegate = authService
                 controller.presentationContextProvider = authService
                 controller.performRequests()
             } catch {
+                print("❌ Error starting passkey sign-in: \(error)")
                 errorMessage = "Passkey sign-in failed: \(error.localizedDescription)"
             }
         }
