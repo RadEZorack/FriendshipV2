@@ -30,7 +30,9 @@ final class AuthService: NSObject, ObservableObject {
     // TODO: Fix SSL certificate for augmego.com and switch back
     private let backendBaseURL = URL(string: "https://dev3.augmego.com")!
     private let sessionTokenKey = "AuthService.sessionToken"
+    private let refreshTokenKey = "AuthService.refreshToken"
     private let appleUserIdKey = "AuthService.appleUserId"
+    private var isRefreshing = false
     
     // MARK: - Initialization
     
@@ -45,9 +47,164 @@ final class AuthService: NSObject, ObservableObject {
     /// Signs out the current user
     func signOut() {
         UserDefaults.standard.removeObject(forKey: sessionTokenKey)
+        UserDefaults.standard.removeObject(forKey: refreshTokenKey)
         UserDefaults.standard.removeObject(forKey: appleUserIdKey)
         isAuthenticated = false
         userDisplayName = nil
+    }
+    
+    /// Gets the current access token
+    func getAccessToken() -> String? {
+        return UserDefaults.standard.string(forKey: sessionTokenKey)
+    }
+    
+    /// Refreshes the access token using the stored refresh token
+    /// Returns true if refresh was successful, false otherwise
+    func refreshAccessToken() async -> Bool {
+        // Prevent concurrent refresh attempts
+        guard !isRefreshing else {
+            // Wait for the ongoing refresh to complete
+            while isRefreshing {
+                try? await Task.sleep(nanoseconds: 100_000_000) // 0.1 seconds
+            }
+            return UserDefaults.standard.string(forKey: sessionTokenKey) != nil
+        }
+        
+        guard let refreshToken = UserDefaults.standard.string(forKey: refreshTokenKey),
+              !refreshToken.isEmpty else {
+            print("❌ No refresh token available")
+            // If no refresh token, user needs to sign in again
+            signOut()
+            return false
+        }
+        
+        isRefreshing = true
+        defer { isRefreshing = false }
+        
+        do {
+            let url = backendBaseURL.appendingPathComponent("/api/auth/refresh")
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            
+            // Send refresh token in request body (more reliable for iOS)
+            let body: [String: Any] = ["refreshToken": refreshToken]
+            request.httpBody = try JSONSerialization.data(withJSONObject: body)
+            
+            // Also send in Cookie header as fallback
+            request.setValue("refresh=\(refreshToken)", forHTTPHeaderField: "Cookie")
+            
+            let (data, response) = try await URLSession.shared.data(for: request)
+            
+            guard let httpResponse = response as? HTTPURLResponse else {
+                throw AuthError.invalidResponse
+            }
+            
+            guard (200..<300).contains(httpResponse.statusCode) else {
+                // If refresh fails, user needs to sign in again
+                print("❌ Token refresh failed with status: \(httpResponse.statusCode)")
+                signOut()
+                return false
+            }
+            
+            // Try to get token from response body first (preferred for iOS)
+            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let token = json["token"] as? String {
+                UserDefaults.standard.set(token, forKey: sessionTokenKey)
+                print("✅ Token refreshed successfully (from body)")
+                return true
+            }
+            
+            // Fallback: Extract the new JWT token from the Set-Cookie header
+            if let setCookieHeader = httpResponse.value(forHTTPHeaderField: "Set-Cookie") {
+                // Parse the cookie string to extract the jwt value
+                let cookies = setCookieHeader.components(separatedBy: ";")
+                for cookie in cookies {
+                    let parts = cookie.trimmingCharacters(in: .whitespaces).components(separatedBy: "=")
+                    if parts.count == 2 && parts[0].trimmingCharacters(in: .whitespaces) == "jwt" {
+                        let newToken = parts[1].trimmingCharacters(in: .whitespaces)
+                        UserDefaults.standard.set(newToken, forKey: sessionTokenKey)
+                        print("✅ Token refreshed successfully (from cookie header)")
+                        return true
+                    }
+                }
+            }
+            
+            throw AuthError.invalidResponse
+        } catch {
+            print("❌ Token refresh error: \(error.localizedDescription)")
+            signOut()
+            return false
+        }
+    }
+    
+    /// Makes an authenticated request, automatically refreshing the token if needed
+    /// Returns the response data and HTTP response
+    func makeAuthenticatedRequest(url: URL, method: String = "GET", body: Data? = nil, headers: [String: String] = [:]) async throws -> (Data, HTTPURLResponse) {
+        // Try the request first
+        var request = URLRequest(url: url)
+        request.httpMethod = method
+        
+        // Set default headers
+        for (key, value) in headers {
+            request.setValue(value, forHTTPHeaderField: key)
+        }
+        
+        // Add authentication
+        if let token = getAccessToken() {
+            request.setValue("jwt=\(token)", forHTTPHeaderField: "Cookie")
+        }
+        
+        if let body = body {
+            request.httpBody = body
+            if !headers.keys.contains("Content-Type") {
+                request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            }
+        }
+        
+        let (data, response) = try await URLSession.shared.data(for: request)
+        
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw AuthError.invalidResponse
+        }
+        
+        // If we get a 401, try refreshing the token and retry once
+        if httpResponse.statusCode == 401 {
+            print("⚠️ Received 401, attempting token refresh...")
+            let refreshed = await refreshAccessToken()
+            
+            if refreshed, let newToken = getAccessToken() {
+                // Retry the request with the new token
+                var retryRequest = URLRequest(url: url)
+                retryRequest.httpMethod = method
+                
+                for (key, value) in headers {
+                    retryRequest.setValue(value, forHTTPHeaderField: key)
+                }
+                
+                retryRequest.setValue("jwt=\(newToken)", forHTTPHeaderField: "Cookie")
+                
+                if let body = body {
+                    retryRequest.httpBody = body
+                    if !headers.keys.contains("Content-Type") {
+                        retryRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                    }
+                }
+                
+                let (retryData, retryResponse) = try await URLSession.shared.data(for: retryRequest)
+                
+                guard let retryHttpResponse = retryResponse as? HTTPURLResponse else {
+                    throw AuthError.invalidResponse
+                }
+                
+                return (retryData, retryHttpResponse)
+            } else {
+                // Refresh failed, user needs to sign in again
+                throw AuthError.backendError(message: "Authentication expired. Please sign in again.", statusCode: 401)
+            }
+        }
+        
+        return (data, httpResponse)
     }
     
     /// Initiates Sign in with Apple flow
@@ -113,7 +270,12 @@ final class AuthService: NSObject, ObservableObject {
             isAuthenticated = true
             // Attempt silent sign-in to verify credential state
             Task {
-                _ = await attemptSilentSignIn()
+                let stillAuthorized = await attemptSilentSignIn()
+                // If user is still authorized but token might be expired, try refreshing
+                if stillAuthorized {
+                    // Try to refresh token proactively
+                    _ = await refreshAccessToken()
+                }
             }
         }
     }
@@ -148,8 +310,14 @@ final class AuthService: NSObject, ObservableObject {
             throw AuthError.invalidResponse
         }
         
-        // Store session token and user ID
+        // Store session token, refresh token, and user ID
         UserDefaults.standard.set(token, forKey: sessionTokenKey)
+        
+        // Store refresh token if provided
+        if let refreshToken = json?["refreshToken"] as? String {
+            UserDefaults.standard.set(refreshToken, forKey: refreshTokenKey)
+        }
+        
         UserDefaults.standard.set(userId, forKey: appleUserIdKey)
         
         // Update user info if available

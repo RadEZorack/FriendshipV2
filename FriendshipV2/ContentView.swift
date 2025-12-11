@@ -13,12 +13,25 @@ import AuthenticationServices
 
 struct ContentView: View {
     @StateObject private var auth = AuthService.shared
+    @State private var selectedTab: TabSelection = .ar
 
     var body: some View {
         Group {
             if auth.isAuthenticated {
-                ARViewContainer()
-                    .edgesIgnoringSafeArea(.all)
+                TabView(selection: $selectedTab) {
+                    ARViewContainer(isActive: selectedTab == .ar)
+                        .edgesIgnoringSafeArea(.all)
+                        .tabItem {
+                            Label("AR", systemImage: "arkit")
+                        }
+                        .tag(TabSelection.ar)
+                    
+                    AvatarGeneratorView()
+                        .tabItem {
+                            Label("Avatar", systemImage: "person.fill")
+                        }
+                        .tag(TabSelection.avatar)
+                }
             } else {
                 LoginView()
             }
@@ -27,7 +40,14 @@ struct ContentView: View {
     }
 }
 
+enum TabSelection {
+    case ar
+    case avatar
+}
+
 struct ARViewContainer: UIViewRepresentable {
+    let isActive: Bool
+    
     func makeUIView(context: Context) -> ARView {
         let arView = ARView(frame: .zero)
         
@@ -47,8 +67,16 @@ struct ARViewContainer: UIViewRepresentable {
             config.frameSemantics.insert(.sceneDepth)
         }
         
-        // Run the AR session
-        arView.session.run(config)
+        // Store config in coordinator for later use
+        context.coordinator.arConfig = config
+        
+        // Run the AR session only if active
+        if isActive {
+            arView.session.run(config)
+            context.coordinator.isPaused = false
+        } else {
+            context.coordinator.isPaused = true
+        }
         
         // Enable occlusion from people and scene depth
         arView.environment.sceneUnderstanding.options.insert(.occlusion)
@@ -59,7 +87,9 @@ struct ARViewContainer: UIViewRepresentable {
         
         // Add a tap gesture recognizer to place cube at center
         let tapGesture = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleTap))
+        tapGesture.isEnabled = isActive
         arView.addGestureRecognizer(tapGesture)
+        context.coordinator.tapGesture = tapGesture
         
         // Add lighting
         arView.environment.lighting.intensityExponent = 1.5
@@ -70,7 +100,39 @@ struct ARViewContainer: UIViewRepresentable {
         return arView
     }
     
-    func updateUIView(_ uiView: ARView, context: Context) {}
+    func updateUIView(_ uiView: ARView, context: Context) {
+        // Pause or resume AR session based on active state
+        if isActive {
+            // Resume AR session if it was paused
+            if context.coordinator.isPaused {
+                let config = context.coordinator.arConfig ?? {
+                    let newConfig = ARWorldTrackingConfiguration()
+                    if ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh) {
+                        newConfig.sceneReconstruction = .mesh
+                    }
+                    newConfig.planeDetection = [.horizontal, .vertical]
+                    if type(of: newConfig).supportsFrameSemantics(.sceneDepth) {
+                        newConfig.frameSemantics.insert(.sceneDepth)
+                    }
+                    return newConfig
+                }()
+                uiView.session.run(config, options: [.resetTracking, .removeExistingAnchors])
+                context.coordinator.isPaused = false
+            }
+            // Enable tap gesture and allow hit testing
+            context.coordinator.tapGesture?.isEnabled = true
+            uiView.isUserInteractionEnabled = true
+        } else {
+            // Pause AR session to save resources
+            if !context.coordinator.isPaused {
+                uiView.session.pause()
+                context.coordinator.isPaused = true
+            }
+            // Disable tap gesture and hit testing to prevent interference
+            context.coordinator.tapGesture?.isEnabled = false
+            uiView.isUserInteractionEnabled = false
+        }
+    }
     
     func makeCoordinator() -> Coordinator {
         Coordinator()
@@ -109,9 +171,16 @@ struct ARViewContainer: UIViewRepresentable {
         weak var arView: ARView?
         var placedModel: Entity?
         var placedAnchor: AnchorEntity?
+        var tapGesture: UITapGestureRecognizer?
+        var arConfig: ARWorldTrackingConfiguration?
+        var isPaused: Bool = false
         
         @objc func handleTap() {
-            guard let arView = arView else { return }
+            guard let arView = arView,
+                  tapGesture?.isEnabled == true,
+                  arView.session.configuration != nil else {
+                return
+            }
             
             // Get the center point of the screen
             let centerPoint = CGPoint(x: arView.bounds.midX, y: arView.bounds.midY)
