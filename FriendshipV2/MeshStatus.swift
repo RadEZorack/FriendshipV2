@@ -25,6 +25,7 @@ struct MeshStatus: Codable, Identifiable {
     let glbFilePath: String?
     let riggedCharacterGlbUrl: String?
     let animationGlbUrl: String?
+    let animationUsdzUrl: String?
     let errorMessage: String?
     let createdAt: String?
     let updatedAt: String?
@@ -46,6 +47,7 @@ struct MeshStatus: Codable, Identifiable {
         case glbFilePath
         case riggedCharacterGlbUrl
         case animationGlbUrl
+        case animationUsdzUrl
         case errorMessage
         case createdAt
         case updatedAt

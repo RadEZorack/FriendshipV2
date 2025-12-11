@@ -80,6 +80,7 @@ final class MeshGenerationService: ObservableObject {
             glbFilePath: nil,
             riggedCharacterGlbUrl: nil,
             animationGlbUrl: nil,
+            animationUsdzUrl: nil,
             errorMessage: nil,
             createdAt: nil,
             updatedAt: nil
