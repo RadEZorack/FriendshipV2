@@ -13,18 +13,48 @@ import AuthenticationServices
 
 struct ContentView: View {
     @StateObject private var auth = AuthService.shared
+    @StateObject private var meshService = MeshGenerationService.shared
     @State private var selectedTab: TabSelection = .ar
+    @State private var selectedMeshId: String?
+    @State private var showingMeshSelector = false
 
     var body: some View {
         Group {
             if auth.isAuthenticated {
                 TabView(selection: $selectedTab) {
-                    ARViewContainer(isActive: selectedTab == .ar)
+                    ZStack {
+                        ARViewContainer(
+                            isActive: selectedTab == .ar,
+                            selectedMeshId: selectedMeshId
+                        )
                         .edgesIgnoringSafeArea(.all)
-                        .tabItem {
-                            Label("AR", systemImage: "arkit")
+                        
+                        // Mesh selector button
+                        VStack {
+                            HStack {
+                                Spacer()
+                                Button(action: {
+                                    showingMeshSelector = true
+                                }) {
+                                    Image(systemName: "person.3.fill")
+                                        .font(.title2)
+                                        .foregroundColor(.white)
+                                        .padding()
+                                        .background(Color.black.opacity(0.6))
+                                        .clipShape(Circle())
+                                }
+                                .padding()
+                            }
+                            Spacer()
                         }
-                        .tag(TabSelection.ar)
+                    }
+                    .tabItem {
+                        Label("AR", systemImage: "arkit")
+                    }
+                    .tag(TabSelection.ar)
+                    .sheet(isPresented: $showingMeshSelector) {
+                        MeshSelectorView(selectedMeshId: $selectedMeshId)
+                    }
                     
                     AvatarGeneratorView()
                         .tabItem {
@@ -37,6 +67,12 @@ struct ContentView: View {
             }
         }
         .animation(.default, value: auth.isAuthenticated)
+        .onAppear {
+            // Load user avatars on appear
+            Task {
+                try? await meshService.fetchUserAvatars()
+            }
+        }
     }
 }
 
@@ -47,6 +83,7 @@ enum TabSelection {
 
 struct ARViewContainer: UIViewRepresentable {
     let isActive: Bool
+    let selectedMeshId: String?
     
     func makeUIView(context: Context) -> ARView {
         let arView = ARView(frame: .zero)
@@ -101,6 +138,9 @@ struct ARViewContainer: UIViewRepresentable {
     }
     
     func updateUIView(_ uiView: ARView, context: Context) {
+        // Update selected mesh ID
+        updateCoordinator(context.coordinator)
+        
         // Pause or resume AR session based on active state
         if isActive {
             // Resume AR session if it was paused
@@ -135,7 +175,13 @@ struct ARViewContainer: UIViewRepresentable {
     }
     
     func makeCoordinator() -> Coordinator {
-        Coordinator()
+        let coordinator = Coordinator()
+        coordinator.selectedMeshId = selectedMeshId
+        return coordinator
+    }
+    
+    func updateCoordinator(_ coordinator: Coordinator) {
+        coordinator.selectedMeshId = selectedMeshId
     }
     
     func addCrosshair(to arView: ARView) {
@@ -174,6 +220,31 @@ struct ARViewContainer: UIViewRepresentable {
         var tapGesture: UITapGestureRecognizer?
         var arConfig: ARWorldTrackingConfiguration?
         var isPaused: Bool = false
+        var selectedMeshId: String?
+        
+        func loadMeshUSDZ(meshId: String) async -> URL? {
+            do {
+                // Fetch mesh details
+                let mesh = try await MeshGenerationService.shared.fetchMesh(meshId: meshId)
+                
+                // Check if mesh has USDZ URL
+                guard let usdzUrlString = mesh.animationUsdzUrl,
+                      let usdzURL = URL(string: usdzUrlString) else {
+                    print("⚠️ Mesh \(meshId) does not have a USDZ URL")
+                    return nil
+                }
+                
+                // Download and cache the USDZ file
+                let filename = FileCacheService.shared.filenameFromURL(usdzURL)
+                let cachedURL = try await FileCacheService.shared.downloadAndCache(url: usdzURL, filename: filename)
+                
+                print("✅ Loaded mesh USDZ from cache: \(cachedURL.path)")
+                return cachedURL
+            } catch {
+                print("❌ Failed to load mesh USDZ: \(error.localizedDescription)")
+                return nil
+            }
+        }
         
         @objc func handleTap() {
             guard let arView = arView,
@@ -216,11 +287,23 @@ struct ARViewContainer: UIViewRepresentable {
 
             Task {
                 do {
-                    // Load USDZ file from bundle
-                    guard let modelURL = Bundle.main.url(forResource: "Animation_FunnyDancing_01", withExtension: "usdz") else {
-                        print("Could not find USDZ file in bundle")
+                    var modelURL: URL?
+                    
+                    // Try to load from selected mesh first
+                    if let meshId = self.selectedMeshId {
+                        modelURL = await self.loadMeshUSDZ(meshId: meshId)
+                    }
+                    
+                    // Fallback to bundle file if no mesh selected or loading failed
+                    if modelURL == nil {
+                        modelURL = Bundle.main.url(forResource: "Animation_FunnyDancing_01", withExtension: "usdz")
+                    }
+                    
+                    guard let modelURL = modelURL else {
+                        print("Could not find USDZ file")
                         return
                     }
+                    
                     print("Loading USDZ model from: \(modelURL.path)")
 
                     let rootEntity = try await Entity(contentsOf: modelURL)
