@@ -9,9 +9,16 @@ import SwiftUI
 
 @main
 struct FriendshipV2App: App {
+    @StateObject private var auth = AuthService.shared
+    
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .environmentObject(auth)
+                .task {
+                    // Attempt silent sign-in on app launch
+                    _ = await auth.attemptSilentSignIn()
+                }
         }
     }
 }
