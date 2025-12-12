@@ -82,17 +82,15 @@ final class AuthService: NSObject, ObservableObject {
         defer { isRefreshing = false }
         
         do {
-            let url = backendBaseURL.appendingPathComponent("/api/auth/refresh")
+            // FastAPI endpoint: POST /api/v1/auth/refresh
+            let url = backendBaseURL.appendingPathComponent("/api/v1/auth/refresh")
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             
-            // Send refresh token in request body (more reliable for iOS)
-            let body: [String: Any] = ["refreshToken": refreshToken]
+            // FastAPI expects: {"refresh_token": "..."}
+            let body: [String: Any] = ["refresh_token": refreshToken]
             request.httpBody = try JSONSerialization.data(withJSONObject: body)
-            
-            // Also send in Cookie header as fallback
-            request.setValue("refresh=\(refreshToken)", forHTTPHeaderField: "Cookie")
             
             let (data, response) = try await URLSession.shared.data(for: request)
             
@@ -107,30 +105,16 @@ final class AuthService: NSObject, ObservableObject {
                 return false
             }
             
-            // Try to get token from response body first (preferred for iOS)
-            if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let token = json["token"] as? String {
-                UserDefaults.standard.set(token, forKey: sessionTokenKey)
-                print("✅ Token refreshed successfully (from body)")
-                return true
+            // FastAPI returns: {"access_token": "...", "token_type": "bearer"}
+            let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+            guard let accessToken = json?["access_token"] as? String else {
+                throw AuthError.invalidResponse
             }
             
-            // Fallback: Extract the new JWT token from the Set-Cookie header
-            if let setCookieHeader = httpResponse.value(forHTTPHeaderField: "Set-Cookie") {
-                // Parse the cookie string to extract the jwt value
-                let cookies = setCookieHeader.components(separatedBy: ";")
-                for cookie in cookies {
-                    let parts = cookie.trimmingCharacters(in: .whitespaces).components(separatedBy: "=")
-                    if parts.count == 2 && parts[0].trimmingCharacters(in: .whitespaces) == "jwt" {
-                        let newToken = parts[1].trimmingCharacters(in: .whitespaces)
-                        UserDefaults.standard.set(newToken, forKey: sessionTokenKey)
-                        print("✅ Token refreshed successfully (from cookie header)")
-                        return true
-                    }
-                }
-            }
-            
-            throw AuthError.invalidResponse
+            // Store the new access token
+            UserDefaults.standard.set(accessToken, forKey: sessionTokenKey)
+            print("✅ Token refreshed successfully")
+            return true
         } catch {
             print("❌ Token refresh error: \(error.localizedDescription)")
             signOut()
@@ -150,9 +134,9 @@ final class AuthService: NSObject, ObservableObject {
             request.setValue(value, forHTTPHeaderField: key)
         }
         
-        // Add authentication
+        // Add authentication using Bearer token (FastAPI standard)
         if let token = getAccessToken() {
-            request.setValue("jwt=\(token)", forHTTPHeaderField: "Cookie")
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
         
         if let body = body {
@@ -182,7 +166,7 @@ final class AuthService: NSObject, ObservableObject {
                     retryRequest.setValue(value, forHTTPHeaderField: key)
                 }
                 
-                retryRequest.setValue("jwt=\(newToken)", forHTTPHeaderField: "Cookie")
+                retryRequest.setValue("Bearer \(newToken)", forHTTPHeaderField: "Authorization")
                 
                 if let body = body {
                     retryRequest.httpBody = body
@@ -282,14 +266,18 @@ final class AuthService: NSObject, ObservableObject {
     
     /// Sends authentication request to backend
     private func authenticateWithBackend(userId: String, identityToken: String) async throws {
-        let url = backendBaseURL.appendingPathComponent("/api/auth/apple")
+        // FastAPI endpoint: POST /api/v1/auth/apple
+        let url = backendBaseURL.appendingPathComponent("/api/v1/auth/apple")
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         
+        // FastAPI expects: {"apple_user_id": "...", "email": "..." (optional)}
+        // Note: For now, we're not verifying the identity token server-side
+        // In production, you should decode and verify the identity token
         let body: [String: Any] = [
-            "userId": userId,
-            "identityToken": identityToken
+            "apple_user_id": userId
+            // email is optional and can be extracted from identity token if needed
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         
@@ -301,32 +289,37 @@ final class AuthService: NSObject, ObservableObject {
         
         guard (200..<300).contains(httpResponse.statusCode) else {
             let errorData = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-            let errorMessage = errorData?["error"] as? String ?? "Authentication failed"
+            let errorMessage = errorData?["detail"] as? String ?? "Authentication failed"
             throw AuthError.backendError(message: errorMessage, statusCode: httpResponse.statusCode)
         }
         
         let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-        guard let token = json?["token"] as? String else {
+        
+        // FastAPI returns: {"access_token": "...", "token_type": "bearer", "refresh_token": "...", "user": {...}}
+        guard let accessToken = json?["access_token"] as? String else {
             throw AuthError.invalidResponse
         }
         
         // Store session token, refresh token, and user ID
-        UserDefaults.standard.set(token, forKey: sessionTokenKey)
+        UserDefaults.standard.set(accessToken, forKey: sessionTokenKey)
         
         // Store refresh token if provided
-        if let refreshToken = json?["refreshToken"] as? String {
+        if let refreshToken = json?["refresh_token"] as? String {
             UserDefaults.standard.set(refreshToken, forKey: refreshTokenKey)
         }
         
         UserDefaults.standard.set(userId, forKey: appleUserIdKey)
         
         // Update user info if available
-        if let user = json?["user"] as? [String: Any],
-           let displayName = user["displayName"] as? String {
-            userDisplayName = displayName
+        if let user = json?["user"] as? [String: Any] {
+            // FastAPI user response doesn't have displayName, but we can store email
+            if let email = user["email"] as? String {
+                userDisplayName = email
+            }
         }
         
         isAuthenticated = true
+        print("✅ Successfully authenticated with FastAPI backend")
     }
 }
 
