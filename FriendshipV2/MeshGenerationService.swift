@@ -44,7 +44,7 @@ final class MeshGenerationService: ObservableObject {
         error = nil
         
         // Use authenticated request helper which handles token refresh automatically
-        let url = backendBaseURL.appendingPathComponent("/api/meshes")
+        let url = backendBaseURL.appendingPathComponent("/api/v1/meshy/generate")
         let body: [String: Any] = ["prompt": prompt.trimmingCharacters(in: .whitespacesAndNewlines)]
         let bodyData = try JSONSerialization.data(withJSONObject: body)
         
@@ -92,7 +92,7 @@ final class MeshGenerationService: ObservableObject {
     
     /// Fetches a specific mesh by ID
     func fetchMesh(meshId: String) async throws -> MeshStatus {
-        let url = backendBaseURL.appendingPathComponent("/api/meshes/\(meshId)")
+        let url = backendBaseURL.appendingPathComponent("/api/v1/meshes/\(meshId)")
         
         let (data, httpResponse) = try await AuthService.shared.makeAuthenticatedRequest(
             url: url,
