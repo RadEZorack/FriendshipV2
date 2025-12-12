@@ -136,7 +136,7 @@ final class MeshGenerationService: ObservableObject {
     
     /// Fetches all user's avatars (for companion avatars)
     func fetchUserAvatars() async throws {
-        let url = backendBaseURL.appendingPathComponent("/api/meshes")
+        let url = backendBaseURL.appendingPathComponent("/api/v1/meshes")
         
         let (data, httpResponse) = try await AuthService.shared.makeAuthenticatedRequest(
             url: url,
