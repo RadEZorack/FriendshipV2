@@ -344,14 +344,29 @@ struct ARViewContainer: UIViewRepresentable {
                     self.placedModel = modelEntity
                     self.placedAnchor = anchorEntity
                     
-                    // Debug: Print joint information
-                    print("{")
+                    // Debug: Print joint information as JSON-ready 2D arrays
+                    var jointData: [String: [[Double]]] = [:]
                     for i in modelEntity.jointNames.indices {
-                        print("\""+modelEntity.jointNames[i]+"\": \"")
-                        print(modelEntity.jointTransforms[i].matrix)
-                        print("\",")
+                        let matrix = modelEntity.jointTransforms[i].matrix
+                        // Convert simd_float4x4 to 2D array (4x4 matrix)
+                        // Convert Float to Double for JSON serialization
+                        let matrixArray: [[Double]] = [
+                            [Double(matrix.columns.0.x), Double(matrix.columns.0.y), Double(matrix.columns.0.z), Double(matrix.columns.0.w)],
+                            [Double(matrix.columns.1.x), Double(matrix.columns.1.y), Double(matrix.columns.1.z), Double(matrix.columns.1.w)],
+                            [Double(matrix.columns.2.x), Double(matrix.columns.2.y), Double(matrix.columns.2.z), Double(matrix.columns.2.w)],
+                            [Double(matrix.columns.3.x), Double(matrix.columns.3.y), Double(matrix.columns.3.z), Double(matrix.columns.3.w)]
+                        ]
+                        jointData[modelEntity.jointNames[i]] = matrixArray
                     }
-                    print("}")
+                    
+                    // Convert to JSON string
+                    if let jsonData = try? JSONSerialization.data(withJSONObject: jointData, options: .prettyPrinted),
+                       let jsonString = String(data: jsonData, encoding: .utf8) {
+                        print(jsonString)
+                    } else {
+                        // Fallback: print as dictionary
+                        print(jointData)
+                    }
                     
                     // Define the left arm limb for IK
                     let leftArmLimb = IKLimb(
@@ -362,26 +377,68 @@ struct ARViewContainer: UIViewRepresentable {
                         endOrientationWeight: [0.4, 0.4, 0.4]
                     )
                     
+                    // Define the right arm limb for IK
+                    let rightArmLimb = IKLimb(
+                        baseJoint: "Hips/Spine02/Spine01/Spine/RightShoulder/RightArm",
+                        endJoint: "Hips/Spine02/Spine01/Spine/RightShoulder/RightArm/RightForeArm/RightHand",
+                        baseWeight: [0.8, 0.8, 0.8],
+                        endPositionWeight: [1.0, 1.0, 1.0],
+                        endOrientationWeight: [0.4, 0.4, 0.4]
+                    )
+                    
                     // Create avatar rig controller
                     let rigController = try AvatarRigController(
                         entity: modelEntity,
                         anchor: anchorEntity,
-                        limbs: ["leftArm": leftArmLimb],
+                        limbs: [
+                            "leftArm": leftArmLimb,
+                            "rightArm": rightArmLimb
+                        ],
                         initialTargetPositions: [
-                            "leftArm_base": SIMD3<Float>(0.0, -15.0, 130.0),  // Base position
-                            "leftArm_end": SIMD3<Float>(0.0, -25.0, 140.0)   // End position (hand)
+                            "leftArm_base": SIMD3<Float>(0.0, -15.0, 130.0),   // Left base position
+                            "leftArm_end": SIMD3<Float>(0.0, -25.0, 140.0),    // Left hand position
+                            "rightArm_base": SIMD3<Float>(0.0, -15.0, 130.0),  // Right base position (mirrored)
+                            "rightArm_end": SIMD3<Float>(0.0, -25.0, 140.0)    // Right hand position (mirrored)
                         ],
                         jointRefinements: [
-                            "Hips/Spine02/Spine01/Spine/LeftShoulder/LeftArm/LeftForeArm": SIMD3<Float>(0, 0, 0)
+                            "Hips/Spine02/Spine01/Spine/LeftShoulder/LeftArm/LeftForeArm": SIMD3<Float>(0, 0, 0),
+                            "Hips/Spine02/Spine01/Spine/RightShoulder/RightArm/RightForeArm": SIMD3<Float>(0, 0, 0)
                         ]
                     )
                     
                     // Store rig controller
                     self.avatarRigController = rigController
                     
-                    // Start waving motion after a brief delay
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                        rigController.wave()
+                    // Test: Apply hardcoded joint animation from AI response
+                    let testAnimationJSON = """
+                    {
+                      "duration": 0.5,
+                      "space": "local",
+                      "changes": {
+                        "Hips/LeftUpLeg/LeftLeg/LeftFoot": {
+                          "matrix": [
+                            [ 0.9948923588,  0.0979486406,  0.0244050957, 0 ],
+                            [ -0.0001510679, 0.2432149649, -0.9699727297, 0 ],
+                            [ -0.1009431481, 0.9650143385,  0.2419873923, 0 ],
+                            [ 0, 23.4277801514, -0.0000009537, 1 ]
+                          ]
+                        }
+                      }
+                    }
+                    """
+                    
+                    if let jsonData = testAnimationJSON.data(using: .utf8),
+                       let animation = try? JSONDecoder().decode(JointAnimation.self, from: jsonData) {
+                        // Apply animation after a brief delay
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                            rigController.applyJointAnimation(animation)
+                        }
+                    } else {
+                        print("⚠️ Failed to decode test animation JSON")
+                        // Fallback to right hand raise
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                            rigController.raiseRightHand()
+                        }
                     }
                 }
             }
