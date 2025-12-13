@@ -67,9 +67,10 @@ struct ContentView: View {
             }
         }
         .animation(.default, value: auth.isAuthenticated)
-        .onAppear {
-            // Load user avatars on appear
-            Task {
+        .task {
+            // Load user avatars after initial render (non-blocking)
+            // Using .task instead of .onAppear ensures it runs asynchronously
+            if auth.isAuthenticated {
                 try? await meshService.fetchUserAvatars()
             }
         }
@@ -479,7 +480,7 @@ struct ARViewContainer: UIViewRepresentable {
                     // Use a recursive function with DispatchQueue for reliable timing
                     // This avoids nested Task issues
                     func performWave() {
-                        print("Waving motion loop - starting wave")
+                        // print("Waving motion loop - starting wave")
                         
                         // Calculate wave positions relative to start
                         // Coordinate system: X=left/right, Y=forward/back, Z=up/down (after -90° X rotation)
