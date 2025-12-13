@@ -30,7 +30,7 @@ final class AvatarRigController {
         entity: ModelEntity,
         anchor: Entity,
         limbs: [String: IKLimb],
-        initialTargetPositions: [String: SIMD3<Float>] = [:],
+        initialTargetMatrices: [String: simd_float4x4] = [:],
         jointRefinements: [String: SIMD3<Float>] = [:]
     ) throws {
         self.entity = entity
@@ -60,10 +60,11 @@ final class AvatarRigController {
         // Create target controller
         self.targetController = IKTargetController(anchor: anchor)
         
-        // Set initial target positions
-        for (targetName, position) in initialTargetPositions {
+        // Set initial target transforms from joint matrices
+        for (targetName, matrix) in initialTargetMatrices {
             let target = targetController.target(named: targetName)
-            target.position = position
+            // Convert simd_float4x4 to Transform
+            target.transform = Transform(matrix: matrix)
         }
         
         // Bind constraints to targets
