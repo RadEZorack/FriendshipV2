@@ -385,6 +385,22 @@ struct ARViewContainer: UIViewRepresentable {
                         endPositionWeight: [1.0, 1.0, 1.0],
                         endOrientationWeight: [0.4, 0.4, 0.4]
                     )
+
+                    let leftLegLimb = IKLimb(
+                        baseJoint: "Hips/LeftUpLeg",
+                        endJoint: "Hips/LeftUpLeg/LeftLeg/LeftFoot",
+                        baseWeight: [0.8, 0.8, 0.8],
+                        endPositionWeight: [1.0, 1.0, 1.0],
+                        endOrientationWeight: [0.3, 0.3, 0.3]
+                    )
+                    
+                    let rightLegLimb = IKLimb(
+                        baseJoint: "Hips/RightUpLeg",
+                        endJoint: "Hips/RightUpLeg/RightLeg/RightFoot",
+                        baseWeight: [0.8, 0.8, 0.8],
+                        endPositionWeight: [1.0, 1.0, 1.0],
+                        endOrientationWeight: [0.3, 0.3, 0.3]
+                    )
                     
                     // Create avatar rig controller
                     let rigController = try AvatarRigController(
@@ -392,17 +408,25 @@ struct ARViewContainer: UIViewRepresentable {
                         anchor: anchorEntity,
                         limbs: [
                             "leftArm": leftArmLimb,
-                            "rightArm": rightArmLimb
+                            "rightArm": rightArmLimb,
+                            "leftLeg": leftLegLimb,
+                            "rightLeg": rightLegLimb
                         ],
                         initialTargetPositions: [
                             "leftArm_base": SIMD3<Float>(0.0, -15.0, 130.0),   // Left base position
                             "leftArm_end": SIMD3<Float>(0.0, -25.0, 140.0),    // Left hand position
                             "rightArm_base": SIMD3<Float>(0.0, -15.0, 130.0),  // Right base position (mirrored)
-                            "rightArm_end": SIMD3<Float>(0.0, -25.0, 140.0)    // Right hand position (mirrored)
+                            "rightArm_end": SIMD3<Float>(0.0, -25.0, 140.0),    // Right hand position (mirrored)
+                            "leftLeg_base": SIMD3<Float>(9.0, -8.0, 2.0),    // near hip
+                            "leftLeg_end": SIMD3<Float>(9.0, 35.0, 0.0),      // near foot
+                            "rightLeg_base": SIMD3<Float>(-9.0, -8.0, 2.0),   // near hip
+                            "rightLeg_end": SIMD3<Float>(-9.0, 35.0, 0.0)     // near foot
                         ],
                         jointRefinements: [
                             "Hips/Spine02/Spine01/Spine/LeftShoulder/LeftArm/LeftForeArm": SIMD3<Float>(0, 0, 0),
-                            "Hips/Spine02/Spine01/Spine/RightShoulder/RightArm/RightForeArm": SIMD3<Float>(0, 0, 0)
+                            "Hips/Spine02/Spine01/Spine/RightShoulder/RightArm/RightForeArm": SIMD3<Float>(0, 0, 0),
+                            "Hips/LeftUpLeg/LeftLeg/LeftFoot": SIMD3<Float>(0, 0, 0),
+                            "Hips/RightUpLeg/RightLeg/RightFoot": SIMD3<Float>(0, 0, 0)
                         ]
                     )
                     
@@ -415,12 +439,12 @@ struct ARViewContainer: UIViewRepresentable {
                       "duration": 0.5,
                       "space": "local",
                       "changes": {
-                        "Hips/LeftUpLeg/LeftLeg/LeftFoot": {
+                        "leftLeg_end": {
                           "matrix": [
                             [ 0.9948923588,  0.0979486406,  0.0244050957, 0 ],
                             [ -0.0001510679, 0.2432149649, -0.9699727297, 0 ],
                             [ -0.1009431481, 0.9650143385,  0.2419873923, 0 ],
-                            [ 0, 23.4277801514, -0.0000009537, 1 ]
+                            [ 0, 0, -0.0000009537, 1 ]
                           ]
                         }
                       }

@@ -18,15 +18,6 @@ final class AvatarRigController {
     
     private var updateTimer: Timer?
     
-    /// Linearly interpolates between two SIMD4<Float> vectors.
-    /// - Parameters:
-    ///   - a: Start vector
-    ///   - b: End vector
-    ///   - t: Interpolation factor in [0, 1]
-    private func lerp(_ a: SIMD4<Float>, _ b: SIMD4<Float>, t: Float) -> SIMD4<Float> {
-        return a + (b - a) * t
-    }
-    
     /// Initializes the avatar rig controller.
     /// - Parameters:
     ///   - entity: The ModelEntity to control
@@ -178,100 +169,46 @@ final class AvatarRigController {
     }
     
     /// Applies a joint animation from JSON/AI response.
+    /// Interprets joint paths as IK target names and animates target entities.
+    /// RealityKit's IK solver handles joint interpolation and blending.
     /// - Parameter animation: The joint animation to apply
     func applyJointAnimation(_ animation: JointAnimation) {
-        // Find joint indices for each joint name in the animation
-        var jointIndices: [String: Int] = [:]
-        for (index, jointName) in entity.jointNames.enumerated() {
-            jointIndices[jointName] = index
+        guard var ikComponent = entity.components[IKComponent.self] else {
+            print("❌ No IKComponent on entity")
+            return
         }
-        
-        // Store original transforms for interpolation
-        var originalTransforms: [String: simd_float4x4] = [:]
-        var targetTransforms: [String: simd_float4x4] = [:]
-        
-        for (jointName, jointMatrix) in animation.changes {
-            guard let jointIndex = jointIndices[jointName] else {
-                print("⚠️ Joint '\(jointName)' not found in model")
-                continue
-            }
-            
-            // Get original transform
-            originalTransforms[jointName] = entity.jointTransforms[jointIndex].matrix
-            
-            // Get target transform from JSON
-            targetTransforms[jointName] = jointMatrix.toSimdMatrix()
-        }
-        
-        // Animate each joint
-        let duration = animation.duration
-        let startTime = Date()
-        
-        // Use a timer to interpolate between original and target transforms
-        let animationTimer = Timer.scheduledTimer(withTimeInterval: 1.0/60.0, repeats: true) { [weak self] timer in
-            guard let self = self else {
-                timer.invalidate()
-                return
-            }
-            
-            let elapsed = Date().timeIntervalSince(startTime)
-            let progress = min(elapsed / duration, 1.0)
-            
-            // Use easeInOut interpolation
-            let easedProgress: Double
-            if progress < 0.5 {
-                easedProgress = 2 * progress * progress
+
+        let solverIndex = 0
+        let solver = ikComponent.solvers[solverIndex]
+
+        for (jointPath, jointMatrix) in animation.changes {
+
+            // 1️⃣ Get or create the target entity
+            let targetEntity = targetController.target(named: jointPath)
+
+            // 2️⃣ Move the target entity (this defines intent)
+            let targetTransform = Transform(matrix: jointMatrix.toSimdMatrix())
+            targetEntity.move(
+                to: targetTransform,
+                relativeTo: targetController.anchor,
+                duration: animation.duration,
+                timingFunction: .easeInOut
+            )
+
+            // 3️⃣ Update the corresponding IK constraint to follow this target
+            // Constraint name MUST match jointPath (as created in rig builder)
+            if var constraint = solver.constraints[jointPath] {
+                constraint.target = targetEntity.transform
+                ikComponent.solvers[solverIndex].constraints[jointPath] = constraint
             } else {
-                let p = -2 * progress + 2
-                easedProgress = 1 - (p * p) / 2
-            }
-            
-            // Apply interpolated transforms to each joint
-            for (jointName, originalMatrix) in originalTransforms {
-                guard let targetMatrix = targetTransforms[jointName],
-                      let jointIndex = jointIndices[jointName] else {
-                    continue
-                }
-                
-                let t: Float = Float(easedProgress)
-                
-                // Extract columns explicitly to help the type checker
-                let o0: SIMD4<Float> = originalMatrix.columns.0
-                let o1: SIMD4<Float> = originalMatrix.columns.1
-                let o2: SIMD4<Float> = originalMatrix.columns.2
-                let o3: SIMD4<Float> = originalMatrix.columns.3
-                
-                let d0: SIMD4<Float> = targetMatrix.columns.0
-                let d1: SIMD4<Float> = targetMatrix.columns.1
-                let d2: SIMD4<Float> = targetMatrix.columns.2
-                let d3: SIMD4<Float> = targetMatrix.columns.3
-                
-                // Interpolate columns with explicit helper
-                let c0: SIMD4<Float> = lerp(o0, d0, t: t)
-                let c1: SIMD4<Float> = lerp(o1, d1, t: t)
-                let c2: SIMD4<Float> = lerp(o2, d2, t: t)
-                let c3: SIMD4<Float> = lerp(o3, d3, t: t)
-                
-                let interpolatedMatrix = simd_float4x4(c0, c1, c2, c3)
-                let interpolatedTransform = Transform(matrix: interpolatedMatrix)
-                
-                // Apply the transform by directly modifying jointTransforms
-                // Note: jointTransforms may be mutable depending on RealityKit version
-                // If this doesn't work, we may need to use skeletal animation or entity hierarchy
-                if jointIndex < self.entity.jointTransforms.count {
-                    // Direct assignment - works if jointTransforms is mutable
-                    self.entity.jointTransforms[jointIndex] = interpolatedTransform
-                }
-            }
-            
-            // Stop timer when animation is complete
-            if progress >= 1.0 {
-                timer.invalidate()
+                print("⚠️ No IK constraint found for \(jointPath)")
             }
         }
-        
-        RunLoop.main.add(animationTimer, forMode: .common)
+
+        // 4️⃣ Re-apply the IKComponent so RealityKit picks up constraint updates
+        entity.components.set(ikComponent)
     }
+
     
     /// Cleans up resources.
     func cleanup() {
