@@ -359,6 +359,14 @@ struct ARViewContainer: UIViewRepresentable {
 
 
                     let modelSkeleton = meshResource.contents.skeletons[0]
+                    
+                    print("{")
+                    for i in modelEntity.jointNames.indices {
+                        print("\""+modelEntity.jointNames[i]+"\": \"")
+                        print(modelEntity.jointTransforms[i].matrix)
+                        print("\",")
+                    }
+                    print("}")
 
 
                     // Start with the default rig instance for the skeleton without any constraints.
