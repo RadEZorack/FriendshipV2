@@ -104,33 +104,33 @@ final class AvatarRigController {
     /// Plays a waving motion on the left arm.
     /// This is a convenience method that creates and plays a waving motion.
     /// - Parameter targetName: Name of the target to wave (default: "leftArm_end")
-    func wave(targetName: String = "leftArm_end") {
-        // Define the waving motion based on the current implementation
-        // This matches the hard-coded waving logic from ContentView
-        let endTarget = targetController.target(named: targetName)
-        let startPosition = endTarget.position
+    // func wave(targetName: String = "leftArm_end") {
+    //     // Define the waving motion based on the current implementation
+    //     // This matches the hard-coded waving logic from ContentView
+    //     let endTarget = targetController.target(named: targetName)
+    //     let startPosition = endTarget.position
         
-        // Calculate wave positions
-        // Coordinate system: X=left/right, Y=forward/back, Z=up/down (after -90° X rotation)
-        let rightPos = startPosition + SIMD3<Float>(15.0, 0.0, 0.0)
-        let leftPos = startPosition + SIMD3<Float>(-15.0, 0.0, 0.0)
+    //     // Calculate wave positions
+    //     // Coordinate system: X=left/right, Y=forward/back, Z=up/down (after -90° X rotation)
+    //     let rightPos = startPosition + SIMD3<Float>(15.0, 0.0, 0.0)
+    //     let leftPos = startPosition + SIMD3<Float>(-15.0, 0.0, 0.0)
         
-        let waveDuration: TimeInterval = 1.0
+    //     let waveDuration: TimeInterval = 1.0
         
-        // Create motion with three steps: right -> left -> center
-        let motion = TargetMotion(
-            targetName: targetName,
-            duration: waveDuration,
-            transforms: [
-                Transform(translation: rightPos),
-                Transform(translation: leftPos),
-                Transform(translation: startPosition)
-            ],
-            timing: [.easeOut, .easeInOut, .easeIn]
-        )
+    //     // Create motion with three steps: right -> left -> center
+    //     let motion = TargetMotion(
+    //         targetName: targetName,
+    //         duration: waveDuration,
+    //         transforms: [
+    //             Transform(translation: rightPos),
+    //             Transform(translation: leftPos),
+    //             Transform(translation: startPosition)
+    //         ],
+    //         timing: [.easeOut, .easeInOut, .easeIn]
+    //     )
         
-        motionPlayer.play(motion, loop: true)
-    }
+    //     motionPlayer.play(motion, loop: true)
+    // }
     
     /// Raises the right hand up.
     /// - Parameter targetName: Name of the target to raise (default: "rightArm_end")
@@ -173,7 +173,7 @@ final class AvatarRigController {
     /// Interprets joint paths as IK target names and animates target entities.
     /// RealityKit's IK solver handles joint interpolation and blending.
     /// - Parameter animation: The joint animation to apply
-    func applyJointAnimation(_ animation: JointAnimation) {
+    func applyJointAnimation(_ animations: [JointAnimation]) {
         guard var ikComponent = entity.components[IKComponent.self] else {
             print("❌ No IKComponent on entity")
             return
@@ -182,27 +182,44 @@ final class AvatarRigController {
         let solverIndex = 0
         let solver = ikComponent.solvers[solverIndex]
 
-        for (jointPath, jointMatrix) in animation.changes {
+        var accumulatedDelay: TimeInterval = 0
+        for animation in animations {
+            accumulatedDelay += animation.duration
+            // var targetEntities: [Entity] = []
+            var updatedConstraints: [String: type(of: solver.constraints).Value] = [:]
+            for (jointPath, jointMatrix) in animation.changes {
 
-            // 1️⃣ Get or create the target entity
-            let targetEntity = targetController.target(named: jointPath)
+                // 1️⃣ Get or create the target entity
+                let targetEntity = targetController.target(named: jointPath)
+                
+                // 2️⃣ Move the target entity (this defines intent)
+                let targetTransform = Transform(matrix: jointMatrix.toSimdMatrix())
+                targetEntity.move(
+                    to: targetTransform,
+                    relativeTo: targetController.anchor,
+                    duration: animation.duration,
+                    timingFunction: .easeInOut
+                )
 
-            // 2️⃣ Move the target entity (this defines intent)
-            let targetTransform = Transform(matrix: jointMatrix.toSimdMatrix())
-            targetEntity.move(
-                to: targetTransform,
-                relativeTo: targetController.anchor,
-                duration: animation.duration,
-                timingFunction: .easeInOut
-            )
+                // targetEntities.append(targetEntity)
+                if var constraint = solver.constraints[jointPath] {
+                    constraint.target = targetEntity.transform
+                    updatedConstraints[jointPath] = constraint
+                    // ikComponent.solvers[solverIndex].constraints[jointPath] = constraint
+                } else {
+                    print("⚠️ No IK constraint found for \(jointPath)")
+                }
 
-            // 3️⃣ Update the corresponding IK constraint to follow this target
-            // Constraint name MUST match jointPath (as created in rig builder)
-            if var constraint = solver.constraints[jointPath] {
-                constraint.target = targetEntity.transform
-                ikComponent.solvers[solverIndex].constraints[jointPath] = constraint
-            } else {
-                print("⚠️ No IK constraint found for \(jointPath)")
+                
+            }
+
+            // Wait for the duration of the animation
+            DispatchQueue.main.asyncAfter(deadline: .now() + accumulatedDelay) {
+                for (jointPath, constraint) in updatedConstraints {
+                    // 3️⃣ Update the corresponding IK constraint to follow this target
+                    // Constraint name MUST match jointPath (as created in rig builder)
+                    ikComponent.solvers[solverIndex].constraints[jointPath] = constraint
+                }
             }
         }
 

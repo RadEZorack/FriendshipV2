@@ -427,11 +427,11 @@ struct ARViewContainer: UIViewRepresentable {
                         ],
                         initialTargetMatrices: jointData,
                         jointRefinements: [
-                            "Hips/Spine02/Spine01/Spine/LeftShoulder/LeftArm/LeftForeArm": SIMD3<Float>(0, 0, 0),
-                            "Hips/Spine02/Spine01/Spine/RightShoulder/RightArm/RightForeArm": SIMD3<Float>(0, 0, 0),
-                            "Hips/LeftUpLeg/LeftLeg/LeftFoot": SIMD3<Float>(0, 0, 0),
-                            "Hips/RightUpLeg/RightLeg/RightFoot": SIMD3<Float>(0, 0, 0),
-                            "Hips/Spine02/Spine01/Spine/neck/Head": SIMD3<Float>(0, 0, 0)
+                            "Hips/Spine02/Spine01/Spine/LeftShoulder/LeftArm/LeftForeArm": SIMD3<Float>(0.0, 0.0, 0.0),
+                            "Hips/Spine02/Spine01/Spine/RightShoulder/RightArm/RightForeArm": SIMD3<Float>(0.0, 0.0, 0.0),
+                            "Hips/LeftUpLeg/LeftLeg/LeftFoot": SIMD3<Float>(0.0, 0.0, 0.0),
+                            "Hips/RightUpLeg/RightLeg/RightFoot": SIMD3<Float>(0.0, 0.0, 0.0),
+                            "Hips/Spine02/Spine01/Spine/neck/Head": SIMD3<Float>(0.0, 0.0, 0.0)
                         ]
                     )
                     
@@ -444,67 +444,104 @@ struct ARViewContainer: UIViewRepresentable {
                     
                     // Test: Apply hardcoded joint animation from AI response
                     let testAnimationJSON1 = """
+                    [
                     {
                       "duration": 0.5,
                       "space": "local",
                       "changes": {
                         "leftArm_end": {
                           "matrix": [
-                            [ 1,  0,  0, 0 ],
-                            [ 0,  0, -1, 0 ],
-                            [ 0,  1,  0, 0 ],
-                            [ 80,  0,  160.0, 1 ]
+                            [ 1.0,  0.0,  0.0, 0.0 ],
+                            [ 0.0,  0.0, -1.0, 0.0 ],
+                            [ 0.0,  1.0,  0.0, 0.0 ],
+                            [ 80.0,  0.0,  160.0, 1.0 ]
+                          ]
+                        },
+                        "rightArm_end": {
+                          "matrix": [
+                            [ 1.0,  0.0,  0.0, 0.0 ],
+                            [ 0.0,  0.0, -1.0, 0.0 ],
+                            [ 0.0,  1.0,  0.0, 0.0 ],
+                            [ -80.0,  0.0,  160.0, 1.0 ]
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "duration": 0.5,
+                      "space": "local",
+                      "changes": {
+                        "rightLeg_end": {
+                          "matrix": [
+                            [ 1.0,  0.0,  0.0, 0.0 ],
+                            [ 0.0,  0.0, -1.0, 0.0 ],
+                            [ 0.0,  1.0,  0.0, 0.0 ],
+                            [ -80.0,  0.0,  0.0, 1.0 ]
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "duration": 0.5,
+                      "space": "local",
+                      "changes": {
+                        "leftLeg_end": {
+                          "matrix": [
+                            [ 1.0,  0.0,  0.0, 0.0 ],
+                            [ 0.0,  0.0, -1.0, 0.0 ],
+                            [ 0.0,  1.0,  0.0, 0.0 ],
+                            [ 80.0,  0.0,  0.0, 1.0 ]
                           ]
                         }
                       }
                     }
+                    ]
                     """
                     
                     if let jsonData = testAnimationJSON1.data(using: .utf8),
-                       let animation = try? JSONDecoder().decode(JointAnimation.self, from: jsonData) {
+                       let animations: [JointAnimation] = try? JSONDecoder().decode([JointAnimation].self, from: jsonData) {
                         // Apply animation after a brief delay
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                            rigController.applyJointAnimation(animation)
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.01) {
+                            rigController.applyJointAnimation(animations)
                         }
                     } else {
                         print("⚠️ Failed to decode test animation JSON")
-                        // Fallback to right hand raise
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
                             rigController.raiseRightHand()
                         }
                     }
 
                     // // Test: Apply hardcoded joint animation from AI response
-                    let testAnimationJSON2 = """
-                    {
-                      "duration": 0.5,
-                      "space": "local",
-                      "changes": {
-                        "rightArm_end": {
-                          "matrix": [
-                            [ 1,  0,  0, 0 ],
-                            [ 0,  0, -1, 0 ],
-                            [ 0,  1,  0, 0 ],
-                            [ -80,  0,  160.0, 1 ]
-                          ]
-                        }
-                      }
-                    }
-                    """
+                    // let testAnimationJSON2 = """
+                    // {
+                    //   "duration": 0.5,
+                    //   "space": "local",
+                    //   "changes": {
+                    //     "rightArm_end": {
+                    //       "matrix": [
+                    //         [ 1,  0,  0, 0 ],
+                    //         [ 0,  0, -1, 0 ],
+                    //         [ 0,  1,  0, 0 ],
+                    //         [ -80,  0,  160.0, 1 ]
+                    //       ]
+                    //     }
+                    //   }
+                    // }
+                    // """
                     
-                    if let jsonData = testAnimationJSON2.data(using: .utf8),
-                       let animation = try? JSONDecoder().decode(JointAnimation.self, from: jsonData) {
-                        // Apply animation after a brief delay
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                            rigController.applyJointAnimation(animation)
-                        }
-                    } else {
-                        print("⚠️ Failed to decode test animation JSON")
-                        // Fallback to right hand raise
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                            rigController.raiseRightHand()
-                        }
-                    }
+                    // if let jsonData = testAnimationJSON2.data(using: .utf8),
+                    //    let animation = try? JSONDecoder().decode(JointAnimation.self, from: jsonData) {
+                    //     // Apply animation after a brief delay
+                    //     DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                    //         rigController.applyJointAnimation(animation)
+                    //     }
+                    // } else {
+                    //     print("⚠️ Failed to decode test animation JSON")
+                    //     // Fallback to right hand raise
+                    //     DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                    //         rigController.raiseRightHand()
+                    //     }
+                    // }
                 }
             }
         }
