@@ -201,7 +201,7 @@ final class AvatarRigController {
                     let solver = ikComponent.solvers[solverIndex]
                     
                     // Process all targets in this animation
-                    for (jointPath, jointMatrix) in animation.changes {
+                    for (jointPath, matrixArray) in animation.changes {
                         // Check for cancellation
                         guard !Task.isCancelled else { break }
                         
@@ -209,7 +209,7 @@ final class AvatarRigController {
                         let targetEntity = targetController.target(named: jointPath)
                         
                         // 2️⃣ Calculate target transform from matrix
-                        let targetTransform = Transform(matrix: jointMatrix.toSimdMatrix())
+                        let targetTransform = Transform(matrix: JointAnimation.toSimdMatrix(from: matrixArray))
                         
                         // 3️⃣ Update the IK constraint target to the final transform we're moving to
                         // This tells the IK solver where to aim

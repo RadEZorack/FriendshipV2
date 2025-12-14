@@ -529,106 +529,66 @@ struct ARViewContainer: UIViewRepresentable {
                       "duration": 1.0,
                       "space": "local",
                       "changes": {
-                        "head_end": {
-                          "matrix": [
-                            [ 1.0,  0.0,  0.0, 0.0 ],
-                            [ 0.0,  0.0,  1.0, 0.0 ],
-                            [ 0.0,  1.0,  0.0, 0.0 ],
-                            [ 0.0,  0.0,  170.0, 1.0 ]
-                          ]
-                        },
-                        "leftArm_end": {
-                          "matrix": [
-                            [ 1.0,  0.0,  0.0, 0.0 ],
-                            [ 0.0,  0.0,  1.0, 0.0 ],
-                            [ 0.0,  1.0,  0.0, 0.0 ],
-                            [ 70.0,  0.0,  140.0, 1.0 ]
-                          ]
-                        },
-                        "rightArm_end": {
-                          "matrix": [
-                            [ 1.0,  0.0,  0.0, 0.0 ],
-                            [ 0.0,  0.0,  1.0, 0.0 ],
-                            [ 0.0,  1.0,  0.0, 0.0 ],
-                            [ -70.0,  0.0,  140.0, 1.0 ]
-                          ]
-                        },
-                        "rightLeg_end": {
-                          "matrix": [
-                            [ 1.0,  0.0,  0.0, 0.0 ],
-                            [ 0.0,  0.0,  1.0, 0.0 ],
-                            [ 0.0,  1.0,  0.0, 0.0 ],
-                            [ -20.0, 0.0,  0.0, 1.0 ]
-                          ]
-                        },
-                        "leftLeg_end": {
-                          "matrix": [
-                            [ 1.0,  0.0,  0.0, 0.0 ],
-                            [ 0.0,  0.0,  1.0, 0.0 ],
-                            [ 0.0,  1.0,  0.0, 0.0 ],
-                            [ 20.0, 0.0,  0.0, 1.0 ]
-                          ]
-                        }
+                        "head_end": [
+                          [ 1.0,  0.0,  0.0, 0.0 ],
+                          [ 0.0,  1.0,  0.0, 0.0 ],
+                          [ 0.0,  0.0,  1.0, 0.0 ],
+                          [ 0.0,  0.0,  170.0, 1.0 ]
+                        ],
+                        "leftArm_end": [
+                          [ 1.0,  0.0,  0.0, 0.0 ],
+                          [ 0.0,  1.0,  0.0, 0.0 ],
+                          [ 0.0,  0.0,  1.0, 0.0 ],
+                          [ 70.0,  0.0,  140.0, 1.0 ]
+                        ],
+                        "rightArm_end": [
+                          [ 1.0,  0.0,  0.0, 0.0 ],
+                          [ 0.0,  1.0,  0.0, 0.0 ],
+                          [ 0.0,  0.0,  1.0, 0.0 ],
+                          [ -70.0,  0.0,  140.0, 1.0 ]
+                        ],
+                        "rightLeg_end": [
+                          [ 1.0,  0.0,  0.0, 0.0 ],
+                          [ 0.0,  1.0,  0.0, 0.0 ],
+                          [ 0.0,  0.0,  1.0, 0.0 ],
+                          [ -20.0, 0.0,  0.0, 1.0 ]
+                        ],
+                        "leftLeg_end": [
+                          [ 1.0,  0.0,  0.0, 0.0 ],
+                          [ 0.0,  1.0,  0.0, 0.0 ],
+                          [ 0.0,  0.0,  1.0, 0.0 ],
+                          [ 20.0, 0.0,  0.0, 1.0 ]
+                        ]
                       }
                     }
                     ]
                     """
 
-                    // if let jsonData = startingAnimationJSON.data(using: .utf8),
-                    //    let animations: [JointAnimation] = try? JSONDecoder().decode([JointAnimation].self, from: jsonData) {
-                    //     // Apply animation after a brief delay
-                    //     DispatchQueue.main.asyncAfter(deadline: .now()) {
-                    //         rigController.applyJointAnimation(animations)
-                    //     }
-                    // } else {
-                    //     print("⚠️ Failed to decode test animation JSON")
-                    //     // DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                    //     //     rigController.raiseRightHand()
-                    //     // }
-                    // }
+                    if let jsonData = startingAnimationJSON.data(using: .utf8),
+                       let animations: [JointAnimation] = try? JSONDecoder().decode([JointAnimation].self, from: jsonData) {
+                        // Apply animation after a brief delay
+                        DispatchQueue.main.asyncAfter(deadline: .now()) {
+                            rigController.applyJointAnimation(animations)
+                        }
+                    } else {
+                        print("⚠️ Failed to decode test animation JSON")
+                        // DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                        //     rigController.raiseRightHand()
+                        // }
+                    }
 
                     // // Test: Apply hardcoded joint animation from AI response
                     let testAnimationJSON = """
                     [
                     {
-                        "duration": 0.5,
+                        "duration": 0.0,
                         "space": "local",
                         "changes": {
-                        "head_end": [
-                            [1, 0, 0, 0],
-                            [0, 0, -1, 0],
-                            [0, 1, 0, 0],
-                            [0, 0, 170, 1]
-                        ],
                         "leftArm_end": [
                             [1, 0, 0, 0],
-                            [0, 0, -1, 0],
                             [0, 1, 0, 0],
-                            [-60, 0, 100, 1]
-                        ],
-                        "rightArm_end": [
-                            [1, 0, 0, 0],
-                            [0, 0, -1, 0],
-                            [0, 1, 0, 0],
-                            [60, 0, 100, 1]
-                        ]
-                        }
-                    },
-                    {
-                        "duration": 0.5,
-                        "space": "local",
-                        "changes": {
-                        "rightArm_end": [
-                            [1, 0, 0, 0],
-                            [0, 0, -1, 0],
-                            [0, 1, 0, 0],
-                            [20, 20, 160, 1]
-                        ],
-                        "head_end": [
-                            [1, 0, 0, 0],
-                            [0, 0, -1, 0],
-                            [0, 1, 0, 0],
-                            [0, 10, 170, 1]
+                            [0, 0, 1, 0],
+                            [0, 0, 170, 1]
                         ]
                         }
                     }
