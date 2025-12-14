@@ -446,7 +446,7 @@ struct ARViewContainer: UIViewRepresentable {
                     let testAnimationJSON1 = """
                     [
                     {
-                      "duration": 0.5,
+                      "duration": 0.0,
                       "space": "local",
                       "changes": {
                         "leftArm_end": {
@@ -476,7 +476,15 @@ struct ARViewContainer: UIViewRepresentable {
                             [ 1.0,  0.0,  0.0, 0.0 ],
                             [ 0.0,  0.0, -1.0, 0.0 ],
                             [ 0.0,  1.0,  0.0, 0.0 ],
-                            [ -80.0,  0.0,  0.0, 1.0 ]
+                            [ -20.0,  60.0,  0.0, 1.0 ]
+                          ]
+                        },
+                        "leftLeg_end": {
+                          "matrix": [
+                            [ 1.0,  0.0,  0.0, 0.0 ],
+                            [ 0.0,  0.0, -1.0, 0.0 ],
+                            [ 0.0,  1.0,  0.0, 0.0 ],
+                            [ 20.0,  -60.0,  0.0, 1.0 ]
                           ]
                         }
                       }
@@ -485,12 +493,20 @@ struct ARViewContainer: UIViewRepresentable {
                       "duration": 0.5,
                       "space": "local",
                       "changes": {
+                        "rightLeg_end": {
+                          "matrix": [
+                            [ 1.0,  0.0,  0.0, 0.0 ],
+                            [ 0.0,  0.0, -1.0, 0.0 ],
+                            [ 0.0,  1.0,  0.0, 0.0 ],
+                            [ -20.0,  -60.0,  0.0, 1.0 ]
+                          ]
+                        },
                         "leftLeg_end": {
                           "matrix": [
                             [ 1.0,  0.0,  0.0, 0.0 ],
                             [ 0.0,  0.0, -1.0, 0.0 ],
                             [ 0.0,  1.0,  0.0, 0.0 ],
-                            [ 80.0,  0.0,  0.0, 1.0 ]
+                            [ 20.0,  60.0,  0.0, 1.0 ]
                           ]
                         }
                       }

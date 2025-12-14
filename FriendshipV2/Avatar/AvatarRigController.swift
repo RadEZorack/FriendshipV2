@@ -17,6 +17,7 @@ final class AvatarRigController {
     private let constraintNames: [String]
     
     private var updateTimer: Timer?
+    private var currentAnimationTask: Task<Void, Never>?
     
     /// Initializes the avatar rig controller.
     /// - Parameters:
@@ -172,7 +173,7 @@ final class AvatarRigController {
     /// Applies a joint animation from JSON/AI response.
     /// Interprets joint paths as IK target names and animates target entities.
     /// RealityKit's IK solver handles joint interpolation and blending.
-    /// Animations are played sequentially in order.
+    /// Animations are played sequentially in order, looping continuously until a new animation is requested.
     /// - Parameter animations: Array of joint animations to apply in sequence
     func applyJointAnimation(_ animations: [JointAnimation]) {
         guard var ikComponent = entity.components[IKComponent.self] else {
@@ -180,46 +181,66 @@ final class AvatarRigController {
             return
         }
 
+        // Cancel any existing animation task
+        currentAnimationTask?.cancel()
+        
         let solverIndex = 0
         
-        // Use Task to sequence animations asynchronously
-        Task { @MainActor in
-            for animation in animations {
-                // Get fresh reference to solver for each animation
-                let solver = ikComponent.solvers[solverIndex]
-                
-                // Process all targets in this animation
-                for (jointPath, jointMatrix) in animation.changes {
-                    // 1️⃣ Get or create the target entity
-                    let targetEntity = targetController.target(named: jointPath)
+        // Create new animation task that loops until cancelled
+        currentAnimationTask = Task { @MainActor in
+            // Loop continuously until task is cancelled
+            while !Task.isCancelled {
+                for animation in animations {
+                    // Check for cancellation before each animation
+                    guard !Task.isCancelled else { break }
                     
-                    // 2️⃣ Calculate target transform from matrix
-                    let targetTransform = Transform(matrix: jointMatrix.toSimdMatrix())
+                    // Get fresh reference to solver for each animation
+                    let solver = ikComponent.solvers[solverIndex]
                     
-                    // 3️⃣ Update the IK constraint target to the final transform we're moving to
-                    // This tells the IK solver where to aim
-                    if var constraint = solver.constraints[jointPath] {
-                        constraint.target = targetTransform
-                        ikComponent.solvers[solverIndex].constraints[jointPath] = constraint
-                    } else {
-                        print("⚠️ No IK constraint found for \(jointPath)")
+                    // Process all targets in this animation
+                    for (jointPath, jointMatrix) in animation.changes {
+                        // Check for cancellation
+                        guard !Task.isCancelled else { break }
+                        
+                        // 1️⃣ Get or create the target entity
+                        let targetEntity = targetController.target(named: jointPath)
+                        
+                        // 2️⃣ Calculate target transform from matrix
+                        let targetTransform = Transform(matrix: jointMatrix.toSimdMatrix())
+                        
+                        // 3️⃣ Update the IK constraint target to the final transform we're moving to
+                        // This tells the IK solver where to aim
+                        if var constraint = solver.constraints[jointPath] {
+                            constraint.target = targetTransform
+                            ikComponent.solvers[solverIndex].constraints[jointPath] = constraint
+                        } else {
+                            print("⚠️ No IK constraint found for \(jointPath)")
+                        }
+                        
+                        // 4️⃣ Start the move animation (this will animate the target entity)
+                        // RealityKit's IK solver will automatically follow the moving target
+                        targetEntity.move(
+                            to: targetTransform,
+                            relativeTo: targetController.anchor,
+                            duration: animation.duration,
+                            timingFunction: .easeInOut
+                        )
                     }
                     
-                    // 4️⃣ Start the move animation (this will animate the target entity)
-                    // RealityKit's IK solver will automatically follow the moving target
-                    targetEntity.move(
-                        to: targetTransform,
-                        relativeTo: targetController.anchor,
-                        duration: animation.duration,
-                        timingFunction: .easeInOut
-                    )
+                    // 5️⃣ Re-apply the IKComponent so RealityKit picks up constraint updates
+                    entity.components.set(ikComponent)
+                    
+                    // 6️⃣ Wait for this animation to complete before starting the next one
+                    // Check for cancellation during sleep
+                    if animation.duration > 0.0 {
+                        do {
+                            try await Task.sleep(nanoseconds: UInt64(animation.duration * 1_000_000_000))
+                        } catch {
+                            // Task was cancelled
+                            break
+                        }
+                    }
                 }
-                
-                // 5️⃣ Re-apply the IKComponent so RealityKit picks up constraint updates
-                entity.components.set(ikComponent)
-                
-                // 6️⃣ Wait for this animation to complete before starting the next one
-                try? await Task.sleep(nanoseconds: UInt64(animation.duration * 1_000_000_000))
             }
         }
     }
@@ -230,6 +251,8 @@ final class AvatarRigController {
         stopUpdateTimer()
         motionPlayer.stopAll()
         targetController.removeAllTargets()
+        currentAnimationTask?.cancel()
+        currentAnimationTask = nil
     }
     
     deinit {
