@@ -366,15 +366,15 @@ struct ARViewContainer: UIViewRepresentable {
                     // Convert to JSON string
                     if let jsonData = try? JSONSerialization.data(withJSONObject: jointDataArray, options: .prettyPrinted),
                        let jsonString = String(data: jsonData, encoding: .utf8) {
-                        print(jsonString)
+                        // print(jsonString)
                     } else {
                         // Fallback: print as dictionary
-                        print(jointDataArray)
+                        // print(jointDataArray)
                     }
 
                     // Define the left arm limb for IK
                     let leftArmLimb = IKLimb(
-                        baseJoint: "Hips/Spine02/Spine01/Spine/LeftShoulder",
+                        baseJoint: "Hips/Spine02/Spine01/Spine/LeftShoulder/LeftArm",
                         endJoint: "Hips/Spine02/Spine01/Spine/LeftShoulder/LeftArm/LeftForeArm/LeftHand",
                         baseWeight: [0.8, 0.8, 0.8],
                         endPositionWeight: [1.0, 1.0, 1.0],
@@ -383,7 +383,7 @@ struct ARViewContainer: UIViewRepresentable {
                     
                     // Define the right arm limb for IK
                     let rightArmLimb = IKLimb(
-                        baseJoint: "Hips/Spine02/Spine01/Spine/RightShoulder",
+                        baseJoint: "Hips/Spine02/Spine01/Spine/RightShoulder/RightArm",
                         endJoint: "Hips/Spine02/Spine01/Spine/RightShoulder/RightArm/RightForeArm/RightHand",
                         baseWeight: [0.8, 0.8, 0.8],
                         endPositionWeight: [1.0, 1.0, 1.0],
@@ -408,11 +408,19 @@ struct ARViewContainer: UIViewRepresentable {
 
                     let headLimb = IKLimb(
                         baseJoint: "Hips/Spine02/Spine01/Spine/neck",
-                        endJoint: "Hips/Spine02/Spine01/Spine/neck/Head",
+                        endJoint: "Hips/Spine02/Spine01/Spine/neck/Head/headfront",
                         baseWeight: [0.6, 0.6, 0.6],
                         endPositionWeight: [0.4, 0.4, 0.4],
                         endOrientationWeight: [1.0, 1.0, 1.0] // orientation matters most
                     )
+
+                    // let hipsLimb = IKLimb(
+                    //     baseJoint: "Hips",
+                    //     endJoint: "Hips",
+                    //     baseWeight: [0.8, 0.8, 0.8],
+                    //     endPositionWeight: [1.0, 1.0, 1.0],
+                    //     endOrientationWeight: [0.3, 0.3, 0.3]
+                    // )
                     
                     // Create avatar rig controller
                     let rigController = try AvatarRigController(
@@ -423,15 +431,17 @@ struct ARViewContainer: UIViewRepresentable {
                             "rightArm": rightArmLimb,
                             "leftLeg": leftLegLimb,
                             "rightLeg": rightLegLimb,
-                            "head": headLimb
+                            "head": headLimb,
+                            // "hips": hipsLimb
                         ],
                         initialTargetMatrices: jointData,
                         jointRefinements: [
-                            "Hips/Spine02/Spine01/Spine/LeftShoulder/LeftArm/LeftForeArm": SIMD3<Float>(0.0, 0.0, 0.0),
-                            "Hips/Spine02/Spine01/Spine/RightShoulder/RightArm/RightForeArm": SIMD3<Float>(0.0, 0.0, 0.0),
+                            "Hips/Spine02/Spine01/Spine/LeftShoulder/LeftArm/LeftForeArm/LeftHand": SIMD3<Float>(0.0, 0.0, 0.0),
+                            "Hips/Spine02/Spine01/Spine/RightShoulder/RightArm/RightForeArm/RightHand": SIMD3<Float>(0.0, 0.0, 0.0),
                             "Hips/LeftUpLeg/LeftLeg/LeftFoot": SIMD3<Float>(0.0, 0.0, 0.0),
                             "Hips/RightUpLeg/RightLeg/RightFoot": SIMD3<Float>(0.0, 0.0, 0.0),
-                            "Hips/Spine02/Spine01/Spine/neck/Head": SIMD3<Float>(0.0, 0.0, 0.0)
+                            "Hips/Spine02/Spine01/Spine/neck/Head/headfront": SIMD3<Float>(0.0, 0.0, 0.0),
+                            // "Hips": SIMD3<Float>(0.0, 0.0, 0.0)
                         ]
                     )
                     
@@ -443,120 +453,199 @@ struct ARViewContainer: UIViewRepresentable {
                     // }
                     
                     // Test: Apply hardcoded joint animation from AI response
-                    let testAnimationJSON1 = """
+                    // let testAnimationJSON1 = """
+                    // [
+                    // {
+                    //   "duration": 0.0,
+                    //   "space": "local",
+                    //   "changes": {
+                    //     "leftArm_end": {
+                    //       "matrix": [
+                    //         [ 1.0,  0.0,  0.0, 0.0 ],
+                    //         [ 0.0,  0.0, -1.0, 0.0 ],
+                    //         [ 0.0,  1.0,  0.0, 0.0 ],
+                    //         [ 80.0,  0.0,  160.0, 1.0 ]
+                    //       ]
+                    //     },
+                    //     "rightArm_end": {
+                    //       "matrix": [
+                    //         [ 1.0,  0.0,  0.0, 0.0 ],
+                    //         [ 0.0,  0.0, -1.0, 0.0 ],
+                    //         [ 0.0,  1.0,  0.0, 0.0 ],
+                    //         [ -80.0,  0.0,  160.0, 1.0 ]
+                    //       ]
+                    //     }
+                    //   }
+                    // },
+                    // {
+                    //   "duration": 0.5,
+                    //   "space": "local",
+                    //   "changes": {
+                    //     "rightLeg_end": {
+                    //       "matrix": [
+                    //         [ 1.0,  0.0,  0.0, 0.0 ],
+                    //         [ 0.0,  0.0, -1.0, 0.0 ],
+                    //         [ 0.0,  1.0,  0.0, 0.0 ],
+                    //         [ -20.0,  60.0,  0.0, 1.0 ]
+                    //       ]
+                    //     },
+                    //     "leftLeg_end": {
+                    //       "matrix": [
+                    //         [ 1.0,  0.0,  0.0, 0.0 ],
+                    //         [ 0.0,  0.0, -1.0, 0.0 ],
+                    //         [ 0.0,  1.0,  0.0, 0.0 ],
+                    //         [ 20.0,  -60.0,  0.0, 1.0 ]
+                    //       ]
+                    //     }
+                    //   }
+                    // },
+                    // {
+                    //   "duration": 0.5,
+                    //   "space": "local",
+                    //   "changes": {
+                    //     "rightLeg_end": {
+                    //       "matrix": [
+                    //         [ 1.0,  0.0,  0.0, 0.0 ],
+                    //         [ 0.0,  0.0, -1.0, 0.0 ],
+                    //         [ 0.0,  1.0,  0.0, 0.0 ],
+                    //         [ -20.0,  -60.0,  0.0, 1.0 ]
+                    //       ]
+                    //     },
+                    //     "leftLeg_end": {
+                    //       "matrix": [
+                    //         [ 1.0,  0.0,  0.0, 0.0 ],
+                    //         [ 0.0,  0.0, -1.0, 0.0 ],
+                    //         [ 0.0,  1.0,  0.0, 0.0 ],
+                    //         [ 20.0,  60.0,  0.0, 1.0 ]
+                    //       ]
+                    //     }
+                    //   }
+                    // }
+                    // ]
+                    // """
+                    let startingAnimationJSON = """
                     [
                     {
-                      "duration": 0.0,
+                      "duration": 1.0,
                       "space": "local",
                       "changes": {
+                        "head_end": {
+                          "matrix": [
+                            [ 1.0,  0.0,  0.0, 0.0 ],
+                            [ 0.0,  0.0,  1.0, 0.0 ],
+                            [ 0.0,  1.0,  0.0, 0.0 ],
+                            [ 0.0,  0.0,  170.0, 1.0 ]
+                          ]
+                        },
                         "leftArm_end": {
                           "matrix": [
                             [ 1.0,  0.0,  0.0, 0.0 ],
-                            [ 0.0,  0.0, -1.0, 0.0 ],
+                            [ 0.0,  0.0,  1.0, 0.0 ],
                             [ 0.0,  1.0,  0.0, 0.0 ],
-                            [ 80.0,  0.0,  160.0, 1.0 ]
+                            [ 70.0,  0.0,  140.0, 1.0 ]
                           ]
                         },
                         "rightArm_end": {
                           "matrix": [
                             [ 1.0,  0.0,  0.0, 0.0 ],
-                            [ 0.0,  0.0, -1.0, 0.0 ],
+                            [ 0.0,  0.0,  1.0, 0.0 ],
                             [ 0.0,  1.0,  0.0, 0.0 ],
-                            [ -80.0,  0.0,  160.0, 1.0 ]
+                            [ -70.0,  0.0,  140.0, 1.0 ]
                           ]
-                        }
-                      }
-                    },
-                    {
-                      "duration": 0.5,
-                      "space": "local",
-                      "changes": {
+                        },
                         "rightLeg_end": {
                           "matrix": [
                             [ 1.0,  0.0,  0.0, 0.0 ],
-                            [ 0.0,  0.0, -1.0, 0.0 ],
+                            [ 0.0,  0.0,  1.0, 0.0 ],
                             [ 0.0,  1.0,  0.0, 0.0 ],
-                            [ -20.0,  60.0,  0.0, 1.0 ]
+                            [ -20.0, 0.0,  0.0, 1.0 ]
                           ]
                         },
                         "leftLeg_end": {
                           "matrix": [
                             [ 1.0,  0.0,  0.0, 0.0 ],
-                            [ 0.0,  0.0, -1.0, 0.0 ],
+                            [ 0.0,  0.0,  1.0, 0.0 ],
                             [ 0.0,  1.0,  0.0, 0.0 ],
-                            [ 20.0,  -60.0,  0.0, 1.0 ]
-                          ]
-                        }
-                      }
-                    },
-                    {
-                      "duration": 0.5,
-                      "space": "local",
-                      "changes": {
-                        "rightLeg_end": {
-                          "matrix": [
-                            [ 1.0,  0.0,  0.0, 0.0 ],
-                            [ 0.0,  0.0, -1.0, 0.0 ],
-                            [ 0.0,  1.0,  0.0, 0.0 ],
-                            [ -20.0,  -60.0,  0.0, 1.0 ]
-                          ]
-                        },
-                        "leftLeg_end": {
-                          "matrix": [
-                            [ 1.0,  0.0,  0.0, 0.0 ],
-                            [ 0.0,  0.0, -1.0, 0.0 ],
-                            [ 0.0,  1.0,  0.0, 0.0 ],
-                            [ 20.0,  60.0,  0.0, 1.0 ]
+                            [ 20.0, 0.0,  0.0, 1.0 ]
                           ]
                         }
                       }
                     }
                     ]
                     """
-                    
-                    if let jsonData = testAnimationJSON1.data(using: .utf8),
-                       let animations: [JointAnimation] = try? JSONDecoder().decode([JointAnimation].self, from: jsonData) {
-                        // Apply animation after a brief delay
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.01) {
-                            rigController.applyJointAnimation(animations)
-                        }
-                    } else {
-                        print("⚠️ Failed to decode test animation JSON")
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                            rigController.raiseRightHand()
-                        }
-                    }
 
-                    // // Test: Apply hardcoded joint animation from AI response
-                    // let testAnimationJSON2 = """
-                    // {
-                    //   "duration": 0.5,
-                    //   "space": "local",
-                    //   "changes": {
-                    //     "rightArm_end": {
-                    //       "matrix": [
-                    //         [ 1,  0,  0, 0 ],
-                    //         [ 0,  0, -1, 0 ],
-                    //         [ 0,  1,  0, 0 ],
-                    //         [ -80,  0,  160.0, 1 ]
-                    //       ]
-                    //     }
-                    //   }
-                    // }
-                    // """
-                    
-                    // if let jsonData = testAnimationJSON2.data(using: .utf8),
-                    //    let animation = try? JSONDecoder().decode(JointAnimation.self, from: jsonData) {
+                    // if let jsonData = startingAnimationJSON.data(using: .utf8),
+                    //    let animations: [JointAnimation] = try? JSONDecoder().decode([JointAnimation].self, from: jsonData) {
                     //     // Apply animation after a brief delay
-                    //     DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                    //         rigController.applyJointAnimation(animation)
+                    //     DispatchQueue.main.asyncAfter(deadline: .now()) {
+                    //         rigController.applyJointAnimation(animations)
                     //     }
                     // } else {
                     //     print("⚠️ Failed to decode test animation JSON")
-                    //     // Fallback to right hand raise
+                    //     // DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                    //     //     rigController.raiseRightHand()
+                    //     // }
+                    // }
+
+                    // // Test: Apply hardcoded joint animation from AI response
+                    let testAnimationJSON = """
+                    [
+                    {
+                        "duration": 0.5,
+                        "space": "local",
+                        "changes": {
+                        "head_end": [
+                            [1, 0, 0, 0],
+                            [0, 0, -1, 0],
+                            [0, 1, 0, 0],
+                            [0, 0, 170, 1]
+                        ],
+                        "leftArm_end": [
+                            [1, 0, 0, 0],
+                            [0, 0, -1, 0],
+                            [0, 1, 0, 0],
+                            [-60, 0, 100, 1]
+                        ],
+                        "rightArm_end": [
+                            [1, 0, 0, 0],
+                            [0, 0, -1, 0],
+                            [0, 1, 0, 0],
+                            [60, 0, 100, 1]
+                        ]
+                        }
+                    },
+                    {
+                        "duration": 0.5,
+                        "space": "local",
+                        "changes": {
+                        "rightArm_end": [
+                            [1, 0, 0, 0],
+                            [0, 0, -1, 0],
+                            [0, 1, 0, 0],
+                            [20, 20, 160, 1]
+                        ],
+                        "head_end": [
+                            [1, 0, 0, 0],
+                            [0, 0, -1, 0],
+                            [0, 1, 0, 0],
+                            [0, 10, 170, 1]
+                        ]
+                        }
+                    }
+                    ]
+                    """
+                    
+                    // if let jsonData = testAnimationJSON.data(using: .utf8),
+                    //    let animations: [JointAnimation] = try? JSONDecoder().decode([JointAnimation].self, from: jsonData) {
+                    //     // Apply animation after a brief delay
                     //     DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                    //         rigController.raiseRightHand()
+                    //         rigController.applyJointAnimation(animations)
                     //     }
+                    // } else {
+                    //     print("⚠️ Failed to decode test animation JSON")
+                    //     // DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                    //     //     rigController.raiseRightHand()
+                    //     // }
                     // }
                 }
             }
