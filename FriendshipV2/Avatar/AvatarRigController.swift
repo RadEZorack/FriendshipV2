@@ -185,6 +185,9 @@ final class AvatarRigController {
         currentAnimationTask?.cancel()
         
         let solverIndex = 0
+
+        // Flag to indicate if the animation should be cancelled when there is no animation to play
+        var shouldCancel = true
         
         // Create new animation task that loops until cancelled
         currentAnimationTask = Task { @MainActor in
@@ -233,13 +236,19 @@ final class AvatarRigController {
                     // 6️⃣ Wait for this animation to complete before starting the next one
                     // Check for cancellation during sleep
                     if animation.duration > 0.0 {
+                        // If the animation has a duration, set the shouldCancel flag to false
+                        shouldCancel = false
                         do {
                             try await Task.sleep(nanoseconds: UInt64(animation.duration * 1_000_000_000))
                         } catch {
                             // Task was cancelled
+                            shouldCancel = true
                             break
                         }
                     }
+                }
+                if shouldCancel {
+                    break
                 }
             }
         }
