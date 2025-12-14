@@ -172,7 +172,8 @@ final class AvatarRigController {
     /// Applies a joint animation from JSON/AI response.
     /// Interprets joint paths as IK target names and animates target entities.
     /// RealityKit's IK solver handles joint interpolation and blending.
-    /// - Parameter animation: The joint animation to apply
+    /// Animations are played sequentially in order.
+    /// - Parameter animations: Array of joint animations to apply in sequence
     func applyJointAnimation(_ animations: [JointAnimation]) {
         guard var ikComponent = entity.components[IKComponent.self] else {
             print("❌ No IKComponent on entity")
@@ -180,51 +181,47 @@ final class AvatarRigController {
         }
 
         let solverIndex = 0
-        let solver = ikComponent.solvers[solverIndex]
-
-        var accumulatedDelay: TimeInterval = 0
-        for animation in animations {
-            accumulatedDelay += animation.duration
-            // var targetEntities: [Entity] = []
-            var updatedConstraints: [String: type(of: solver.constraints).Value] = [:]
-            for (jointPath, jointMatrix) in animation.changes {
-
-                // 1️⃣ Get or create the target entity
-                let targetEntity = targetController.target(named: jointPath)
+        
+        // Use Task to sequence animations asynchronously
+        Task { @MainActor in
+            for animation in animations {
+                // Get fresh reference to solver for each animation
+                let solver = ikComponent.solvers[solverIndex]
                 
-                // 2️⃣ Move the target entity (this defines intent)
-                let targetTransform = Transform(matrix: jointMatrix.toSimdMatrix())
-                targetEntity.move(
-                    to: targetTransform,
-                    relativeTo: targetController.anchor,
-                    duration: animation.duration,
-                    timingFunction: .easeInOut
-                )
-
-                // targetEntities.append(targetEntity)
-                if var constraint = solver.constraints[jointPath] {
-                    constraint.target = targetEntity.transform
-                    updatedConstraints[jointPath] = constraint
-                    // ikComponent.solvers[solverIndex].constraints[jointPath] = constraint
-                } else {
-                    print("⚠️ No IK constraint found for \(jointPath)")
+                // Process all targets in this animation
+                for (jointPath, jointMatrix) in animation.changes {
+                    // 1️⃣ Get or create the target entity
+                    let targetEntity = targetController.target(named: jointPath)
+                    
+                    // 2️⃣ Calculate target transform from matrix
+                    let targetTransform = Transform(matrix: jointMatrix.toSimdMatrix())
+                    
+                    // 3️⃣ Update the IK constraint target to the final transform we're moving to
+                    // This tells the IK solver where to aim
+                    if var constraint = solver.constraints[jointPath] {
+                        constraint.target = targetTransform
+                        ikComponent.solvers[solverIndex].constraints[jointPath] = constraint
+                    } else {
+                        print("⚠️ No IK constraint found for \(jointPath)")
+                    }
+                    
+                    // 4️⃣ Start the move animation (this will animate the target entity)
+                    // RealityKit's IK solver will automatically follow the moving target
+                    targetEntity.move(
+                        to: targetTransform,
+                        relativeTo: targetController.anchor,
+                        duration: animation.duration,
+                        timingFunction: .easeInOut
+                    )
                 }
-
                 
-            }
-
-            // Wait for the duration of the animation
-            DispatchQueue.main.asyncAfter(deadline: .now() + accumulatedDelay) {
-                for (jointPath, constraint) in updatedConstraints {
-                    // 3️⃣ Update the corresponding IK constraint to follow this target
-                    // Constraint name MUST match jointPath (as created in rig builder)
-                    ikComponent.solvers[solverIndex].constraints[jointPath] = constraint
-                }
+                // 5️⃣ Re-apply the IKComponent so RealityKit picks up constraint updates
+                entity.components.set(ikComponent)
+                
+                // 6️⃣ Wait for this animation to complete before starting the next one
+                try? await Task.sleep(nanoseconds: UInt64(animation.duration * 1_000_000_000))
             }
         }
-
-        // 4️⃣ Re-apply the IKComponent so RealityKit picks up constraint updates
-        entity.components.set(ikComponent)
     }
 
     
