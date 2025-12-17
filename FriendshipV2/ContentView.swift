@@ -20,6 +20,7 @@ import Combine
 class OrbControlState: ObservableObject {
     weak var coordinator: ARViewContainer.Coordinator?
     @Published var isReady: Bool = false
+    @Published var selectedAxis: OrbAxis? = nil
     
     func updateTargetPosition(orbName: String, axis: OrbAxis, translation: CGSize) {
         guard let coordinator = coordinator,
@@ -292,6 +293,49 @@ struct ContentView: View {
                                 .padding()
                             }
                             Spacer()
+                            
+                            // Axis selection buttons
+                            HStack(spacing: 20) {
+                                // X axis button
+                                Button(action: {
+                                    orbControlState.selectedAxis = .x
+                                }) {
+                                    Text("X")
+                                        .font(.title2)
+                                        .fontWeight(.bold)
+                                        .foregroundColor(.white)
+                                        .frame(width: 50, height: 50)
+                                        .background(orbControlState.selectedAxis == .x ? Color.red.opacity(0.8) : Color.red.opacity(0.4))
+                                        .clipShape(Circle())
+                                }
+                                
+                                // Y axis button
+                                Button(action: {
+                                    orbControlState.selectedAxis = .y
+                                }) {
+                                    Text("Y")
+                                        .font(.title2)
+                                        .fontWeight(.bold)
+                                        .foregroundColor(.white)
+                                        .frame(width: 50, height: 50)
+                                        .background(orbControlState.selectedAxis == .y ? Color.green.opacity(0.8) : Color.green.opacity(0.4))
+                                        .clipShape(Circle())
+                                }
+                                
+                                // Z axis button
+                                Button(action: {
+                                    orbControlState.selectedAxis = .z
+                                }) {
+                                    Text("Z")
+                                        .font(.title2)
+                                        .fontWeight(.bold)
+                                        .foregroundColor(.white)
+                                        .frame(width: 50, height: 50)
+                                        .background(orbControlState.selectedAxis == .z ? Color.blue.opacity(0.8) : Color.blue.opacity(0.4))
+                                        .clipShape(Circle())
+                                }
+                            }
+                            .padding(.bottom, 30)
                         }
                     }
                     .tabItem {
@@ -469,6 +513,7 @@ struct ARViewContainer: UIViewRepresentable {
         var orbEntities: [String: ModelEntity] = [:]
         var draggingOrb: String?
         var dragStartPosition: SIMD3<Float>?
+        var dragStartScreenLocation: CGPoint?
         
         func loadMeshUSDZ(meshId: String) async -> URL? {
             do {
@@ -989,6 +1034,8 @@ struct ARViewContainer: UIViewRepresentable {
             // Add gesture recognizer for dragging orbs (only if not already added)
             if arView.gestureRecognizers?.contains(where: { $0 is UIPanGestureRecognizer }) == false {
                 let panGesture = UIPanGestureRecognizer(target: self, action: #selector(handleOrbDrag(_:)))
+                panGesture.maximumNumberOfTouches = 1
+                panGesture.minimumNumberOfTouches = 1
                 arView.addGestureRecognizer(panGesture)
             }
             
@@ -1045,6 +1092,8 @@ struct ARViewContainer: UIViewRepresentable {
             
             let location = gesture.location(in: arView)
             
+            print("🎮 Gesture state: \(gesture.state.rawValue), location: \(location)")
+            
             switch gesture.state {
             case .began:
                 // Hit test to find which orb or avatar part was touched
@@ -1056,9 +1105,16 @@ struct ARViewContainer: UIViewRepresentable {
                 if let hitEntity = arView.entity(at: location) as? ModelEntity {
                     let orbName = hitEntity.name
                     if orbEntities[orbName] != nil {
+                        // Check if an axis is selected
+                        guard let selectedAxis = orbControlState?.selectedAxis else {
+                            print("⚠️ Please select an axis (X, Y, or Z) before dragging")
+                            return
+                        }
+                        
                         // Direct hit on an orb
                         draggingOrb = orbName
                         dragStartPosition = hitEntity.position(relativeTo: anchor)
+                        dragStartScreenLocation = location
                         
                         // Cancel any running animations to prevent resetting positions
                         if let animationTask = rigController.currentAnimationTask {
@@ -1067,7 +1123,7 @@ struct ARViewContainer: UIViewRepresentable {
                             print("🛑 Cancelled animation to preserve orb position")
                         }
                         
-                        print("🎯 Started dragging orb: \(orbName) (direct hit)")
+                        print("🎯 Started dragging orb: \(orbName) (direct hit) along \(selectedAxis) axis")
                         return
                     }
                 }
@@ -1163,8 +1219,15 @@ struct ARViewContainer: UIViewRepresentable {
                 }
                 
                 if let closest = closestOrb {
+                    // Check if an axis is selected
+                    guard let selectedAxis = orbControlState?.selectedAxis else {
+                        print("⚠️ Please select an axis (X, Y, or Z) before dragging")
+                        return
+                    }
+                    
                     draggingOrb = closest.name
                     dragStartPosition = closest.entity.position(relativeTo: anchor)
+                    dragStartScreenLocation = location
                     
                     // Cancel any running animations to prevent resetting positions
                     if let animationTask = rigController.currentAnimationTask {
@@ -1173,127 +1236,94 @@ struct ARViewContainer: UIViewRepresentable {
                         print("🛑 Cancelled animation to preserve orb position")
                     }
                     
-                    print("🎯 Started dragging orb: \(closest.name) at distance: \(minDistance)m")
+                    print("🎯 Started dragging orb: \(closest.name) along \(selectedAxis) axis")
                 } else {
                     print("⚠️ No orb found near touch location")
                 }
                 
             case .changed:
-                guard let orbName = draggingOrb,
-                      let orbEntity = orbEntities[orbName] else { return }
-                
-                // Project touch location to a plane parallel to the phone screen
-                // Use the orb's current depth to maintain distance from camera
-                guard let frame = arView.session.currentFrame else { return }
-                let cameraTransform = frame.camera.transform
-                let cameraPosition = SIMD3<Float>(
-                    cameraTransform.columns.3.x,
-                    cameraTransform.columns.3.y,
-                    cameraTransform.columns.3.z
-                )
-                
-                // Get current orb position in world space
-                let currentOrbWorldPos = orbEntity.position(relativeTo: nil)
-                
-                // Calculate depth from camera to orb (distance along camera's forward vector)
-                let forwardVector = SIMD3<Float>(-cameraTransform.columns.2.x, -cameraTransform.columns.2.y, -cameraTransform.columns.2.z)
-                let toOrb = currentOrbWorldPos - cameraPosition
-                var depth = simd_dot(toOrb, forwardVector)
-                
-                // If depth is invalid, use the drag start position depth
-                if depth <= 0 {
-                    break
-                    // if let startPos = dragStartPosition {
-                    //     let anchorWorldPos = anchor.position(relativeTo: nil)
-                    //     let startWorldPos = anchorWorldPos + startPos
-                    //     let toStart = startWorldPos - cameraPosition
-                    //     depth = simd_dot(toStart, forwardVector)
-                    // }
-                    // if depth <= 0 {
-                    //     depth = 1.0 // Default 1 meter if still invalid
-                    // }
+                guard let orbName = draggingOrb else {
+                    print("⚠️ .changed: No draggingOrb")
+                    return
+                }
+                guard let orbEntity = orbEntities[orbName] else {
+                    print("⚠️ .changed: No orbEntity for \(orbName)")
+                    return
+                }
+                guard let selectedAxis = orbControlState?.selectedAxis else {
+                    print("⚠️ .changed: No selectedAxis")
+                    return
+                }
+                guard let startPos = dragStartPosition else {
+                    print("⚠️ .changed: No dragStartPosition")
+                    return
+                }
+                guard let startScreenLoc = dragStartScreenLocation else {
+                    print("⚠️ .changed: No dragStartScreenLocation")
+                    return
                 }
                 
-                // Normalize screen coordinates (-1 to 1)
-                let normalizedPoint = CGPoint(
-                    x: (location.x / arView.bounds.width - 0.5) * 2.0,
-                    y: (0.5 - location.y / arView.bounds.height) * 2.0
-                )
+                // Calculate drag delta in screen space
+                let deltaX = location.x - startScreenLoc.x
+                let deltaY = location.y - startScreenLoc.y
                 
-                // Get FOV from camera intrinsics
-                // Camera intrinsics are always in landscape orientation
-                let intrinsics = frame.camera.intrinsics
-                let fx = intrinsics[0][0]
-                let fy = intrinsics[1][1]
+                print("🔄 Drag update: \(orbName), axis: \(selectedAxis), delta: (\(deltaX), \(deltaY))")
                 
-                // Camera image resolution (always landscape)
-                let imageWidth = Float(frame.camera.imageResolution.width)
-                let imageHeight = Float(frame.camera.imageResolution.height)
-                
-                // Calculate FOV - use horizontal FOV for width calculations
-                let horizontalFOV = 2.0 * atan(imageWidth / (2.0 * fx))
-                let verticalFOV = 2.0 * atan(imageHeight / (2.0 * fy))
-                
-                // Get view bounds (changes with device orientation)
-                let viewWidth = Float(arView.bounds.width)
-                let viewHeight = Float(arView.bounds.height)
-                let viewAspect = viewWidth / viewHeight
-                
-                // Check device orientation to determine which FOV to use
-                let deviceOrientation = UIDevice.current.orientation
-                let isPortrait = deviceOrientation == .portrait || deviceOrientation == .portraitUpsideDown
-                
-                // Use appropriate FOV based on orientation
-                // In portrait: view is taller, so use vertical FOV for horizontal movement
-                // In landscape: view is wider, so use horizontal FOV for horizontal movement
-                let effectiveHorizontalFOV = isPortrait ? verticalFOV : horizontalFOV
-                let effectiveVerticalFOV = isPortrait ? horizontalFOV : verticalFOV
-                
-                // Calculate camera basis vectors
-                let rightVector = SIMD3<Float>(cameraTransform.columns.0.x, cameraTransform.columns.0.y, cameraTransform.columns.0.z)
-                let upVector = SIMD3<Float>(cameraTransform.columns.1.x, cameraTransform.columns.1.y, cameraTransform.columns.1.z)
-                
-                // Project to plane at current depth, parallel to screen
-                // Use the appropriate FOV for each axis based on orientation
-                let horizontalOffset = rightVector * Float(normalizedPoint.x) * depth * tan(effectiveHorizontalFOV / 2.0)
-                let verticalOffset = upVector * Float(normalizedPoint.y) * depth * tan(effectiveVerticalFOV / 2.0)
-                
-                // Calculate new world position
-                let newWorldPosition = cameraPosition + forwardVector * depth + horizontalOffset + verticalOffset
-                
-                // Convert to anchor's local space
+                // Get the avatar's local coordinate axes from the anchor
                 let anchorTransform = anchor.transformMatrix(relativeTo: nil)
-                let anchorPosition = SIMD3<Float>(
-                    anchorTransform.columns.3.x,
-                    anchorTransform.columns.3.y,
-                    anchorTransform.columns.3.z
-                )
-                let localPosition = newWorldPosition - anchorPosition
+                let anchorRight = SIMD3<Float>(anchorTransform.columns.0.x, anchorTransform.columns.0.y, anchorTransform.columns.0.z)
+                let anchorUp = SIMD3<Float>(anchorTransform.columns.1.x, anchorTransform.columns.1.y, anchorTransform.columns.1.z)
+                let anchorForward = SIMD3<Float>(anchorTransform.columns.2.x, anchorTransform.columns.2.y, anchorTransform.columns.2.z)
                 
-                // Update orb position (in RealityKit coordinate system: Y up, Z forward)
-                orbEntity.position = localPosition
+                // Calculate movement along the selected axis in avatar's local space
+                let sensitivity: Float = 0.01 // 1cm per pixel
+                var newPosition = startPos
+                
+                switch selectedAxis {
+                case .x:
+                    // Move along X axis (left/right in avatar's local space)
+                    // Use screen X movement projected onto avatar's right vector
+                    let movement = anchorRight * Float(deltaX) * sensitivity
+                    newPosition = startPos + movement
+                    
+                case .y:
+                    // Move along Y axis (up/down in avatar's local space)
+                    // Use screen Y movement (inverted) projected onto avatar's up vector
+                    let movement = anchorUp * Float(-deltaY) * sensitivity
+                    newPosition = startPos + movement
+                    
+                case .z:
+                    // Move along Z axis (forward/back in avatar's local space)
+                    // Use screen Y movement (inverted) projected onto avatar's forward vector
+                    let movement = anchorForward * Float(-deltaY) * sensitivity
+                    newPosition = startPos + movement
+                }
+                
+                // Update orb position
+                orbEntity.position = newPosition
+                print("📍 Updated orb position: \(newPosition)")
                 
                 // Update IK target
-                // Convert from RealityKit coordinates (Y up, Z forward) to animation coordinates
-                // Also convert from meters to centimeters
-                // Mapping: left/right screen (X) -> up/down animation (Y), up/down screen (Y) -> left/right animation (X)
+                // Convert from RealityKit coordinates to animation coordinates
+                // Animation uses: X=left/right, Y=up/down, Z=in/out (in cm)
                 let target = rigController.targetController.target(named: orbName)
                 var newTransform = target.transform
-                // Remap axes: (x, y, z) -> (y, x, z) * 100
-                // X (left/right screen) -> Y (up/down animation)
-                // Y (up/down screen) -> X (left/right animation)
-                // Z (in/out) -> Z (in/out animation)
+                
+                // Convert from meters to centimeters and map coordinates
+                // Based on user's mapping: (x, y, z) -> (x, z, y) in cm
                 let targetTranslation = SIMD3<Float>(
-                    localPosition.x,// * 100.0,   // Y (up/down screen) becomes X (left/right animation)
-                    localPosition.z,// * 100.0,   // X (left/right screen) becomes Y (up/down animation)
-                    localPosition.y,// * 100.0    // Z (in/out) stays Z (in/out animation)
+                    newPosition.x * 100.0,  // X stays X
+                    newPosition.z * 100.0,  // Z becomes Y
+                    newPosition.y * 100.0  // Y becomes Z
                 )
                 newTransform.translation = targetTranslation
                 target.transform = newTransform
+                print("🎯 Updated IK target translation: \(targetTranslation)")
                 
             case .ended, .cancelled:
                 draggingOrb = nil
                 dragStartPosition = nil
+                dragStartScreenLocation = nil
                 
             case .failed:
                 draggingOrb = nil
