@@ -11,6 +11,7 @@ import RealityKit
 /// Binds IK constraints to target entities generically.
 enum IKConstraintBinder {
     /// Binds all constraints in an entity's IKComponent to target entities from the controller.
+    /// Uses IK targets (not pose targets) since IK solver needs the rotated space.
     /// - Parameters:
     ///   - entity: The entity with the IKComponent
     ///   - controller: The controller providing target entities
@@ -26,14 +27,17 @@ enum IKConstraintBinder {
             return false
         }
         
-        // Bind each constraint to its corresponding target entity
+        // Sync all pose targets to IK targets before binding
+        controller.syncAllPoseToIK()
+        
+        // Bind each constraint to its corresponding IK target entity
         for constraintName in constraintNames {
             guard var constraint = ikComponent.solvers[0].constraints[constraintName] else {
                 continue
             }
             
-            let target = controller.target(named: constraintName)
-            constraint.target = target.transform
+            let ikTarget = controller.ikTarget(named: constraintName)
+            constraint.target = ikTarget.transform
             
             // For end constraints, set animation override weight
             if constraintName.hasSuffix("_end") {
@@ -47,8 +51,9 @@ enum IKConstraintBinder {
         return true
     }
     
-    /// Updates constraint targets to follow their target entities.
+    /// Updates constraint targets to follow their IK target entities.
     /// This should be called periodically (e.g., in a timer) to keep IK in sync.
+    /// First syncs pose targets to IK targets, then updates constraints.
     /// - Parameters:
     ///   - entity: The entity with the IKComponent
     ///   - controller: The controller providing target entities
@@ -62,14 +67,17 @@ enum IKConstraintBinder {
             return
         }
         
-        // Update each constraint target to match its target entity's transform
+        // Sync all pose targets to IK targets first
+        controller.syncAllPoseToIK()
+        
+        // Update each constraint target to match its IK target entity's transform
         for constraintName in constraintNames {
             guard var constraint = ikComponent.solvers[0].constraints[constraintName],
-                  let target = controller.targets[constraintName] else {
+                  let ikTarget = controller.ikTargets[constraintName] else {
                 continue
             }
             
-            constraint.target = target.transform
+            constraint.target = ikTarget.transform
             ikComponent.solvers[0].constraints[constraintName] = constraint
         }
         

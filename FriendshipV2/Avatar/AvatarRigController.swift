@@ -14,7 +14,7 @@ final class AvatarRigController {
     let anchor: Entity
     let targetController: IKTargetController
     let motionPlayer: MotionPlayer
-    private let constraintNames: [String]
+    let constraintNames: [String]  // Made public so UI can force IK updates
     
     private var updateTimer: Timer?
     var currentAnimationTask: Task<Void, Never>?
@@ -24,15 +24,17 @@ final class AvatarRigController {
     ///   - entity: The ModelEntity to control
     ///   - anchor: The anchor entity (parent of the model)
     ///   - limbs: Dictionary of limb definitions for IK
-    ///   - initialTargetPositions: Optional dictionary of target names to initial positions
+    ///   - initialTargetMatrices: Optional dictionary of target names to initial matrices (in animation space: cm, X=left/right, Y=forward/back, Z=up/down)
     ///   - jointRefinements: Optional dictionary of joint names to refinement settings
+    ///   - modelRotation: Rotation to apply when converting pose space to IK space (default: -90° around X)
     /// - Throws: Error if IK rig cannot be built
     init(
         entity: ModelEntity,
         anchor: Entity,
         limbs: [String: IKLimb],
         initialTargetMatrices: [String: simd_float4x4] = [:],
-        jointRefinements: [String: SIMD3<Float>] = [:]
+        jointRefinements: [String: SIMD3<Float>] = [:],
+        modelRotation: simd_quatf = simd_quatf(angle: -.pi / 2, axis: [1, 0, 0])
     ) throws {
         self.entity = entity
         self.anchor = anchor
@@ -61,14 +63,45 @@ final class AvatarRigController {
         // Create target controller
         self.targetController = IKTargetController(anchor: anchor)
         
+        // Set model rotation for pose→IK conversion
+        targetController.modelRotation = modelRotation
+        
         // Set initial target transforms from joint matrices
+        // Convert from animation space (cm, X=left/right, Y=forward/back, Z=up/down) to pose space (m, X=left/right, Y=up/down, Z=forward/back)
         for (targetName, matrix) in initialTargetMatrices {
-            let target = targetController.target(named: targetName)
-            // Convert simd_float4x4 to Transform
-            target.transform = Transform(matrix: matrix)
+            let poseTarget = targetController.poseTarget(named: targetName)
+            
+            // Extract translation from matrix (in cm, animation space)
+            let animTranslation = SIMD3<Float>(
+                matrix.columns.3.x,
+                matrix.columns.3.y,
+                matrix.columns.3.z
+            )
+            
+            // Convert to pose space: cm→m, swap Y and Z
+            // Animation: (x, y, z) = (left/right, forward/back, up/down) in cm
+            // Pose: (x, y, z) = (left/right, up/down, forward/back) in m
+            let poseTranslation = SIMD3<Float>(
+                animTranslation.x * 0.01,  // X stays X, cm→m
+                animTranslation.z * 0.01,  // Z (up/down) becomes Y (up/down), cm→m
+                animTranslation.y * 0.01   // Y (forward/back) becomes Z (forward/back), cm→m
+            )
+            
+            // Extract rotation from matrix (preserve it)
+            let rotation = simd_quatf(matrix)
+            
+            // Set pose target transform (clean pose space)
+            poseTarget.transform = Transform(
+                scale: SIMD3<Float>(1, 1, 1),
+                rotation: rotation,
+                translation: poseTranslation
+            )
         }
         
-        // Bind constraints to targets
+        // Sync all pose targets to IK targets
+        targetController.syncAllPoseToIK()
+        
+        // Bind constraints to IK targets
         guard IKConstraintBinder.bindTargets(
             entity: entity,
             controller: targetController,
@@ -100,6 +133,26 @@ final class AvatarRigController {
     private func stopUpdateTimer() {
         updateTimer?.invalidate()
         updateTimer = nil
+    }
+    
+    /// Forces an immediate update of IK constraints and joints.
+    /// This should be called after manually moving pose targets (e.g., via orb sliders).
+    func updateJoints() {
+        // Sync all pose targets to IK targets
+        targetController.syncAllPoseToIK()
+        
+        // Update IK constraints
+        IKConstraintBinder.updateTargets(
+            entity: entity,
+            controller: targetController,
+            constraintNames: constraintNames
+        )
+        
+        // Force RealityKit to process the IK solver by re-applying the component
+        // This ensures joints are updated immediately
+        if var ikComponent = entity.components[IKComponent.self] {
+            entity.components.set(ikComponent)
+        }
     }
     
     /// Plays a waving motion on the left arm.
@@ -136,12 +189,12 @@ final class AvatarRigController {
     /// Raises the right hand up.
     /// - Parameter targetName: Name of the target to raise (default: "rightArm_end")
     func raiseRightHand(targetName: String = "rightArm_end") {
-        let endTarget = targetController.target(named: targetName)
-        let startPosition = endTarget.position
+        let poseTarget = targetController.poseTarget(named: targetName)
+        let startPosition = poseTarget.position(relativeTo: targetController.poseRoot)
         
-        // Calculate raised position (move up in Z direction)
-        // Coordinate system: X=left/right, Y=forward/back, Z=up/down (after -90° X rotation)
-        let raisedPosition = startPosition + SIMD3<Float>(0.0, 0.0, 50.0)  // Raise 50 units up
+        // Calculate raised position (move up in Y direction in pose space)
+        // Pose space: X=left/right, Y=up/down, Z=forward/back
+        let raisedPosition = startPosition + SIMD3<Float>(0.0, 0.5, 0.0)  // Raise 0.5m up
         
         let raiseDuration: TimeInterval = 0.8
         
@@ -160,14 +213,17 @@ final class AvatarRigController {
     }
     
     /// Applies a pose delta from server data.
+    /// Transforms should be in pose space.
     /// - Parameter poseDelta: Dictionary of joint names to transforms
     func applyPoseDelta(_ poseDelta: [String: Transform]) {
         // Future: Apply server-driven pose deltas
         // For now, this is a placeholder
         for (targetName, transform) in poseDelta {
-            let target = targetController.target(named: targetName)
-            target.transform = transform
+            let poseTarget = targetController.poseTarget(named: targetName)
+            poseTarget.transform = transform
         }
+        // Sync to IK targets
+        targetController.syncAllPoseToIK()
     }
     
     /// Applies a joint animation from JSON/AI response.
@@ -205,26 +261,34 @@ final class AvatarRigController {
                         // Check for cancellation
                         guard !Task.isCancelled else { break }
                         
-                        // 1️⃣ Get or create the target entity
-                        let targetEntity = targetController.target(named: jointPath)
+                        // 1️⃣ Get or create the pose target entity (for UI editing)
+                        let poseTarget = targetController.poseTarget(named: jointPath)
                         
-                        // 2️⃣ Calculate target transform from matrix
-                        let targetTransform = Transform(matrix: JointAnimation.toSimdMatrix(from: matrixArray))
+                        // 2️⃣ Calculate target transform from matrix (in animation space: cm, X=left/right, Y=forward/back, Z=up/down)
+                        let animMatrix = JointAnimation.toSimdMatrix(from: matrixArray)
+                        let animTransform = Transform(matrix: animMatrix)
                         
-                        // 3️⃣ Update the IK constraint target to the final transform we're moving to
-                        // This tells the IK solver where to aim
-                        if var constraint = solver.constraints[jointPath] {
-                            constraint.target = targetTransform
-                            ikComponent.solvers[solverIndex].constraints[jointPath] = constraint
-                        } else {
-                            print("⚠️ No IK constraint found for \(jointPath)")
-                        }
+                        // 3️⃣ Convert from animation space to pose space
+                        // Animation: (x, y, z) = (left/right, forward/back, up/down) in cm
+                        // Pose: (x, y, z) = (left/right, up/down, forward/back) in m
+                        let animTranslation = animTransform.translation
+                        let poseTranslation = SIMD3<Float>(
+                            animTranslation.x * 0.01,  // X stays X, cm→m
+                            animTranslation.z * 0.01,  // Z (up/down) becomes Y (up/down), cm→m
+                            animTranslation.y * 0.01   // Y (forward/back) becomes Z (forward/back), cm→m
+                        )
                         
-                        // 4️⃣ Start the move animation (this will animate the target entity)
-                        // RealityKit's IK solver will automatically follow the moving target
-                        targetEntity.move(
-                            to: targetTransform,
-                            relativeTo: targetController.anchor,
+                        let poseTransform = Transform(
+                            scale: animTransform.scale,
+                            rotation: animTransform.rotation,
+                            translation: poseTranslation
+                        )
+                        
+                        // 4️⃣ Start the move animation on pose target
+                        // The update timer will sync pose→IK automatically
+                        poseTarget.move(
+                            to: poseTransform,
+                            relativeTo: targetController.poseRoot,
                             duration: animation.duration,
                             timingFunction: .easeInOut
                         )

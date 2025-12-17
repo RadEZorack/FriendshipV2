@@ -18,11 +18,12 @@ final class MotionPlayer {
         self.controller = controller
     }
     
-    /// Plays a motion by animating the target entity through its transforms.
+    /// Plays a motion by animating the pose target entity through its transforms.
+    /// Transforms should be in pose space (clean coordinate system).
     /// - Parameter motion: The motion to play
     /// - Parameter loop: Whether to loop the motion (default: false)
     func play(_ motion: TargetMotion, loop: Bool = false) {
-        let target = controller.target(named: motion.targetName)
+        let poseTarget = controller.poseTarget(named: motion.targetName)
         let stepDuration = motion.duration / Double(motion.transforms.count)
         
         // Clear any existing timers for this target
@@ -46,9 +47,10 @@ final class MotionPlayer {
             let transform = motion.transforms[index]
             let timing = index < motion.timing.count ? motion.timing[index] : .easeInOut
             
-            target.move(
+            // Animate pose target (update timer will sync to IK target)
+            poseTarget.move(
                 to: transform,
-                relativeTo: controller.anchor,
+                relativeTo: controller.poseRoot,
                 duration: stepDuration,
                 timingFunction: timing
             )

@@ -34,12 +34,13 @@ class OrbControlState: ObservableObject {
             return
         }
         
-        let target = rigController.targetController.target(named: orbName)
-        let currentTransform = target.transform
+        let poseTarget = rigController.targetController.poseTarget(named: orbName)
+        let currentTransform = poseTarget.transform
         
-        let sensitivity: Float = 0.5
+        let sensitivity: Float = 0.01 // Convert screen pixels to meters
         var newTranslation = currentTransform.translation
         
+        // Update translation in pose space (X=left/right, Y=up/down, Z=forward/back)
         switch axis {
         case .x:
             newTranslation.x += Float(translation.width) * sensitivity
@@ -49,144 +50,118 @@ class OrbControlState: ObservableObject {
             newTranslation.z += Float(-translation.height) * sensitivity
         }
         
-        var newTransform = currentTransform
-        newTransform.translation = newTranslation
-        target.transform = newTransform
+        // Update pose target
+        poseTarget.transform = Transform(
+            scale: currentTransform.scale,
+            rotation: currentTransform.rotation,
+            translation: newTranslation
+        )
+        
+        // Immediately sync pose→IK so avatar updates
+        rigController.targetController.syncPoseToIK(targetName: orbName)
+        
+        // Force immediate joint update
+        rigController.updateJoints()
     }
     
     func updateTargetPositionInPlane(orbName: String, screenPoint: CGPoint) {
         guard let coordinator = coordinator,
               let rigController = coordinator.avatarRigController,
-              let arView = coordinator.arView else {
+              let arView = coordinator.arView,
+              let anchor = coordinator.placedAnchor else {
             return
         }
         
-        // Raycast from screen point to find 3D position
+        // Raycast from screen point to find 3D position in world space
         let results = arView.raycast(from: screenPoint, allowing: .estimatedPlane, alignment: .any)
+        
+        var worldPosition: SIMD3<Float>?
         
         if let firstResult = results.first {
             // Use the raycast result's world position
             let worldTransform = firstResult.worldTransform
-            let worldPosition = SIMD3<Float>(
+            worldPosition = SIMD3<Float>(
                 worldTransform.columns.3.x,
                 worldTransform.columns.3.y,
                 worldTransform.columns.3.z
             )
-            
-            let target = rigController.targetController.target(named: orbName)
-            var newTransform = target.transform
-            newTransform.translation = worldPosition
-            target.transform = newTransform
         } else {
             // Fallback: try existing plane geometry
             if let raycastQuery = arView.makeRaycastQuery(from: screenPoint, allowing: .existingPlaneGeometry, alignment: .any) {
                 let raycastResults = arView.session.raycast(raycastQuery)
                 if let firstResult = raycastResults.first {
                     let worldTransform = firstResult.worldTransform
-                    let worldPosition = SIMD3<Float>(
+                    worldPosition = SIMD3<Float>(
                         worldTransform.columns.3.x,
                         worldTransform.columns.3.y,
                         worldTransform.columns.3.z
                     )
-                    
-                    let target = rigController.targetController.target(named: orbName)
-                    var newTransform = target.transform
-                    newTransform.translation = worldPosition
-                    target.transform = newTransform
-                } else {
-                    // If no raycast hit, project to a plane at the current target's depth
-                    guard let frame = arView.session.currentFrame else { return }
-                    let cameraTransform = frame.camera.transform
-                    let cameraPosition = SIMD3<Float>(
-                        cameraTransform.columns.3.x,
-                        cameraTransform.columns.3.y,
-                        cameraTransform.columns.3.z
-                    )
-                    
-                    let target = rigController.targetController.target(named: orbName)
-                    let currentPos = target.transform.translation
-                    
-                    // Project screen point to a plane at the target's depth
-                    let depth = simd_length(currentPos - cameraPosition)
-                    if depth > 0 {
-                        let normalizedPoint = CGPoint(
-                            x: (screenPoint.x / arView.bounds.width - 0.5) * 2.0,
-                            y: (0.5 - screenPoint.y / arView.bounds.height) * 2.0
-                        )
-                        
-                        // Get FOV from camera intrinsics or use default
-                        let fov: Float
-                        if let frame = arView.session.currentFrame {
-                            let intrinsics = frame.camera.intrinsics
-                            // Calculate horizontal FOV from intrinsics
-                            let fx = intrinsics[0][0]
-                            let imageWidth = Float(frame.camera.imageResolution.width)
-                            fov = 2.0 * atan(imageWidth / (2.0 * fx))
-                        } else {
-                            fov = 60.0 * .pi / 180.0 // Default 60 degrees
-                        }
-                        let aspect = Float(arView.bounds.width / arView.bounds.height)
-                        
-                        let rightVector = SIMD3<Float>(cameraTransform.columns.0.x, cameraTransform.columns.0.y, cameraTransform.columns.0.z)
-                        let upVector = SIMD3<Float>(cameraTransform.columns.1.x, cameraTransform.columns.1.y, cameraTransform.columns.1.z)
-                        let forwardVector = SIMD3<Float>(-cameraTransform.columns.2.x, -cameraTransform.columns.2.y, -cameraTransform.columns.2.z)
-                        
-                        let horizontalOffset = rightVector * Float(normalizedPoint.x) * depth * tan(fov / 2.0) * aspect
-                        let verticalOffset = upVector * Float(normalizedPoint.y) * depth * tan(fov / 2.0)
-                        
-                        let newPosition = cameraPosition + forwardVector * depth + horizontalOffset + verticalOffset
-                        
-                        var newTransform = target.transform
-                        newTransform.translation = newPosition
-                        target.transform = newTransform
-                    }
                 }
             }
+        }
+        
+        if let worldPos = worldPosition {
+            // Convert world position to pose space (relative to poseRoot)
+            let anchorTransform = anchor.transformMatrix(relativeTo: nil)
+            let anchorPosition = SIMD3<Float>(
+                anchorTransform.columns.3.x,
+                anchorTransform.columns.3.y,
+                anchorTransform.columns.3.z
+            )
+            
+            // Position relative to anchor (this is pose space since poseRoot is under anchor with identity transform)
+            let posePosition = worldPos - anchorPosition
+            
+            // Update pose target
+            let poseTarget = rigController.targetController.poseTarget(named: orbName)
+            var newTransform = poseTarget.transform
+            newTransform.translation = posePosition
+            poseTarget.transform = newTransform
+            
+            // Immediately sync pose→IK so avatar updates
+            rigController.targetController.syncPoseToIK(targetName: orbName)
+            
+            // Force immediate joint update
+            rigController.updateJoints()
         }
     }
     
     func initializeOrbPositions() {
         guard let coordinator = coordinator,
-              let rigController = coordinator.avatarRigController,
-              let anchor = coordinator.placedAnchor else {
+              let rigController = coordinator.avatarRigController else {
             return
         }
         
-        // Initialize orbs at their default positions from the starting animation
-        // These positions are in centimeters, convert to meters (divide by 100)
-        // Coordinate system: X=left/right, Y=up/down, Z=forward/back
-        // Since feet look good at z=0, and head/arms are too close with positive z,
-        // we should use Y for vertical and keep Z closer to 0 or negative
-        let scaleFactor: Float = 0.01 // 1cm = 0.01m
+        // Initialize orbs at their default positions in pose space (meters)
+        // Pose space: X=left/right, Y=up/down, Z=forward/back
         let defaultPositions: [String: SIMD3<Float>] = [
-            "head_end": SIMD3<Float>(0.0, 0.0, 170.0 * scaleFactor),      // 1.7m up (use Y axis)
-            "leftArm_end": SIMD3<Float>(70.0 * scaleFactor, 0.0, 140.0 * scaleFactor),  // 0.7m left, 1.4m up
-            "rightArm_end": SIMD3<Float>(-70.0 * scaleFactor, 0.0, 140.0 * scaleFactor), // 0.7m right, 1.4m up
-            "rightLeg_end": SIMD3<Float>(-20.0 * scaleFactor, 0.0, 0.0),  // 0.2m right
-            "leftLeg_end": SIMD3<Float>(20.0 * scaleFactor, 0.0, 0.0)     // 0.2m left
+            "head_end": SIMD3<Float>(0.0, 1.7, 0.0),      // 1.7m up
+            "leftArm_end": SIMD3<Float>(0.7, 1.4, 0.0),  // 0.7m left, 1.4m up
+            "rightArm_end": SIMD3<Float>(-0.7, 1.4, 0.0), // 0.7m right, 1.4m up
+            "rightLeg_end": SIMD3<Float>(-0.2, 0.0, 0.0),  // 0.2m right
+            "leftLeg_end": SIMD3<Float>(0.2, 0.0, 0.0)     // 0.2m left
         ]
         
-        print("🎯 Initializing orb positions with scale factor: \(scaleFactor)")
+        print("🎯 Initializing orb positions in pose space")
         for (name, pos) in defaultPositions {
             print("   \(name): \(pos)")
         }
         
         for (orbName, position) in defaultPositions {
-            let target = rigController.targetController.target(named: orbName)
+            let poseTarget = rigController.targetController.poseTarget(named: orbName)
             
-            // Get the current transform to preserve any coordinate system setup
-            var transform = target.transform
+            // Set pose target transform (clean pose space, no conversions needed)
+            poseTarget.transform = Transform(
+                scale: SIMD3<Float>(1, 1, 1),
+                rotation: simd_quatf(ix: 0, iy: 0, iz: 0, r: 1),
+                translation: position
+            )
             
-            // Only update the translation, keeping rotation and scale as-is
-            // This preserves the coordinate system the IK system expects
-            transform.translation = position
-            
-            target.transform = transform
-            
-            print("🎯 Set target \(orbName) translation to: \(position)")
-            print("   Full transform: \(transform)")
-            print("   Target position relative to anchor: \(target.position(relativeTo: anchor))")
+            print("🎯 Set pose target \(orbName) translation to: \(position)")
         }
+        
+        // Sync all pose targets to IK targets
+        rigController.targetController.syncAllPoseToIK()
     }
     
     func project3DToScreen(_ worldPosition: SIMD3<Float>) -> CGPoint? {
@@ -262,6 +237,7 @@ class OrbControlState: ObservableObject {
                let anchor = coordinator.placedAnchor,
                let orbEntity = coordinator.orbEntities[orbName],
                let rigController = coordinator.avatarRigController {
+                // Store original position in pose space
                 let currentPos = orbEntity.position(relativeTo: anchor)
                 originalOrbPositions[orbName] = currentPos
                 
@@ -279,7 +255,6 @@ class OrbControlState: ObservableObject {
     
     func updateOrbPositions(axis: OrbAxis, value: Float) {
         guard let coordinator = coordinator,
-              let anchor = coordinator.placedAnchor,
               let rigController = coordinator.avatarRigController else { return }
         
         // Cancel any running animations to prevent resetting positions
@@ -288,21 +263,15 @@ class OrbControlState: ObservableObject {
             rigController.currentAnimationTask = nil
         }
         
-        // Get the avatar's local coordinate axes from the anchor
-        let anchorTransform = anchor.transformMatrix(relativeTo: nil)
-        let anchorRight = SIMD3<Float>(anchorTransform.columns.0.x, anchorTransform.columns.0.y, anchorTransform.columns.0.z)
-        let anchorUp = SIMD3<Float>(anchorTransform.columns.1.x, anchorTransform.columns.1.y, anchorTransform.columns.1.z)
-        let anchorForward = SIMD3<Float>(anchorTransform.columns.2.x, anchorTransform.columns.2.y, anchorTransform.columns.2.z)
-        
-        // Calculate movement vector based on axis (invert X only, model is backwards)
+        // Calculate movement vector in pose space (X=left/right, Y=up/down, Z=forward/back)
         let movement: SIMD3<Float>
         switch axis {
         case .x:
-            movement = anchorRight * (-value)  // Inverted (model is backwards)
+            movement = SIMD3<Float>(value, 0.0, 0.0)  // Left/right
         case .y:
-            movement = anchorUp * value
+            movement = SIMD3<Float>(0.0, value, 0.0)  // Up/down
         case .z:
-            movement = anchorForward * value  // Not inverted - should match joint movement
+            movement = SIMD3<Float>(0.0, 0.0, value)  // Forward/back
         }
         
         // Update all selected orbs
@@ -310,30 +279,25 @@ class OrbControlState: ObservableObject {
             guard let orbEntity = coordinator.orbEntities[orbName],
                   let originalPos = originalOrbPositions[orbName] else { continue }
             
-            // Calculate new position: original + movement
-            // But we need to account for all slider values, not just the current one
-            // So we calculate the total movement from all three sliders
-            let totalMovement = anchorRight * (-zSliderValue) + anchorUp * ySliderValue + anchorForward * xSliderValue
+            // Calculate new position: original + total movement from all sliders
+            let totalMovement = SIMD3<Float>(xSliderValue, ySliderValue, zSliderValue)
             let newPosition = originalPos + totalMovement
             
-            // Update orb position
+            // Update orb visual position (in pose space, relative to anchor)
             orbEntity.position = newPosition
             
-            // Update IK target
-            let target = rigController.targetController.target(named: orbName)
-            var newTransform = target.transform
+            // Update pose target (no coordinate conversions needed!)
+            let poseTarget = rigController.targetController.poseTarget(named: orbName)
+            var newTransform = poseTarget.transform
+            newTransform.translation = newPosition
+            poseTarget.transform = newTransform
             
-            // Convert from meters to centimeters and map coordinates
-            // Based on user's mapping: (x, y, z) -> (x, z, y) in cm
-            // Z axis needs to be inverted: when orb moves forward, joint should move forward
-            let targetTranslation = SIMD3<Float>(
-                newPosition.x * 100.0,  // X stays X
-                newPosition.z * 100.0,  // Z becomes Y (inverted so forward orb = forward joint)
-                newPosition.y * 100.0  // Y becomes Z
-            )
-            newTransform.translation = targetTranslation
-            target.transform = newTransform
+            // Immediately sync pose→IK so avatar updates
+            rigController.targetController.syncPoseToIK(targetName: orbName)
         }
+        
+        // Force immediate joint update so avatar responds to orb changes
+        rigController.updateJoints()
     }
     
     func resetSliders() {
@@ -344,30 +308,27 @@ class OrbControlState: ObservableObject {
         
         // Reset all selected orbs to their original positions (stored when first selected)
         guard let coordinator = coordinator,
-              let anchor = coordinator.placedAnchor,
               let rigController = coordinator.avatarRigController else { return }
         
         for orbName in selectedOrbs {
             guard let orbEntity = coordinator.orbEntities[orbName],
                   let originalPos = originalOrbPositions[orbName] else { continue }
             
-            // Reset orb position to original
+            // Reset orb visual position to original
             orbEntity.position = originalPos
             
-            // Reset IK target
-            let target = rigController.targetController.target(named: orbName)
-            var newTransform = target.transform
+            // Reset pose target (no coordinate conversions needed!)
+            let poseTarget = rigController.targetController.poseTarget(named: orbName)
+            var newTransform = poseTarget.transform
+            newTransform.translation = originalPos
+            poseTarget.transform = newTransform
             
-            // Convert from meters to centimeters and map coordinates
-            // Z axis needs to be inverted to match the conversion in updateOrbPositions
-            let targetTranslation = SIMD3<Float>(
-                originalPos.x * 100.0,
-                originalPos.z * 100.0,  // Inverted to match updateOrbPositions
-                originalPos.y * 100.0
-            )
-            newTransform.translation = targetTranslation
-            target.transform = newTransform
+            // Immediately sync pose→IK so avatar updates
+            rigController.targetController.syncPoseToIK(targetName: orbName)
         }
+        
+        // Force immediate joint update so avatar responds to reset
+        rigController.updateJoints()
     }
 }
 
@@ -964,7 +925,8 @@ struct ARViewContainer: UIViewRepresentable {
                     print("✓ Successfully resolved a ModelEntity from loaded content!")
                     
                     // Rotate model 90 degrees around X axis
-                    modelEntity.orientation = simd_quatf(angle: -.pi / 2, axis: [1, 0, 0])
+                    let modelRotation = simd_quatf(angle: -.pi / 2, axis: [1, 0, 0])
+                    modelEntity.orientation = modelRotation
 
                     // Create an anchor entity
                     let anchorEntity = AnchorEntity(world: transform)
@@ -1055,7 +1017,8 @@ struct ARViewContainer: UIViewRepresentable {
                     //     endOrientationWeight: [0.3, 0.3, 0.3]
                     // )
                     
-                    // Create avatar rig controller
+                    // Create avatar rig controller with model rotation
+                    // The model rotation is used to convert from pose space to IK space
                     let rigController = try AvatarRigController(
                         entity: modelEntity,
                         anchor: anchorEntity,
@@ -1075,7 +1038,8 @@ struct ARViewContainer: UIViewRepresentable {
                             "Hips/RightUpLeg/RightLeg/RightFoot": SIMD3<Float>(0.0, 0.0, 0.0),
                             "Hips/Spine02/Spine01/Spine/neck/Head/headfront": SIMD3<Float>(0.0, 0.0, 0.0),
                             // "Hips": SIMD3<Float>(0.0, 0.0, 0.0)
-                        ]
+                        ],
+                        modelRotation: modelRotation
                     )
                     
                     // Store rig controller
@@ -1323,18 +1287,14 @@ struct ARViewContainer: UIViewRepresentable {
                 let orbEntity = ModelEntity(mesh: sphereMesh, materials: [material])
                 orbEntity.name = orbName
                 
-                // Get the IK target
-                let target = rigController.targetController.target(named: orbName)
+                // Get the pose target (UI editing happens in pose space)
+                let poseTarget = rigController.targetController.poseTarget(named: orbName)
                 
-                // Use the target's actual position relative to anchor
-                // The animation sets positions in centimeters, convert to meters
-                // Also swap Y and Z to match RealityKit's coordinate system
-                let targetPositionRaw = target.position(relativeTo: anchor)
-                let converted = targetPositionRaw * 0.01 // Convert cm to meters
-                // Swap Y and Z: (x, y, z) -> (x, z, y)
-                let targetPosition = SIMD3<Float>(converted.x, converted.z, converted.y)
+                // Use the pose target's position relative to anchor (pose space)
+                // Pose space: X=left/right, Y=up/down, Z=forward/back (in meters)
+                let targetPosition = poseTarget.position(relativeTo: anchor)
                 
-                // Set orb position to match the target's actual position (in meters)
+                // Set orb position to match the pose target's position
                 orbEntity.position = targetPosition
                 
                 // Reset rotation and scale to identity to avoid coordinate system issues
@@ -1342,9 +1302,7 @@ struct ARViewContainer: UIViewRepresentable {
                 orbEntity.scale = SIMD3<Float>(1, 1, 1)
                 
                 print("✅ Created orb \(orbName)")
-                print("   Target transform translation (cm): \(target.transform.translation)")
-                print("   Target position raw (cm): \(targetPositionRaw)")
-                print("   Target position converted (m): \(targetPosition)")
+                print("   Pose target transform translation (m): \(poseTarget.transform.translation)")
                 print("   Orb position: \(orbEntity.position)")
                 print("   Distance from anchor: \(simd_length(targetPosition))m")
                 
@@ -1382,7 +1340,7 @@ struct ARViewContainer: UIViewRepresentable {
         
         func startOrbPositionSync(rigController: AvatarRigController, anchor: AnchorEntity) {
             orbSyncTimer?.invalidate()
-            // Sync orbs to IK targets when not selected
+            // Sync orbs to pose targets when not selected
             // This keeps the orbs connected to the avatar's limbs
             orbSyncTimer = Timer.scheduledTimer(withTimeInterval: 1.0/60.0, repeats: true) { [weak self] _ in
                 guard let self = self else { return }
@@ -1393,27 +1351,14 @@ struct ARViewContainer: UIViewRepresentable {
                         continue
                     }
                     
-                    let target = rigController.targetController.target(named: orbName)
-                    // Get target position in animation coordinates (cm), convert to RealityKit (m)
-                    let targetTransform = target.transform
-                    let targetPosCm = targetTransform.translation
-                    
-                    // Convert from animation coordinates to RealityKit coordinates
-                    // When dragging, we convert: RealityKit (x, y, z) -> Animation (y, x, z) * 100
-                    // So reverse: Animation (x, y, z) -> RealityKit (y, x, z) / 100
-                    // Animation X (left/right) -> RealityKit Y (up/down)
-                    // Animation Y (up/down) -> RealityKit X (left/right)
-                    // Animation Z (in/out) -> RealityKit Z (in/out)
-                    let targetPosM = SIMD3<Float>(
-                        targetPosCm.x * 0.01,  // Animation X (left/right) -> RealityKit X (left/right)
-                        targetPosCm.z * 0.01,  // Animation Z (in/out) -> RealityKit Y (up/down)
-                        targetPosCm.y * 0.01   // Animation Y (up/down) -> RealityKit Z (in/out)
-                    )
+                    // Get pose target position (in pose space, meters)
+                    let poseTarget = rigController.targetController.poseTarget(named: orbName)
+                    let targetPos = poseTarget.position(relativeTo: anchor)
                     
                     // Only update if position changed significantly to avoid jitter
-                    let distance = simd_length(orbEntity.position - targetPosM)
+                    let distance = simd_length(orbEntity.position - targetPos)
                     if distance > 0.001 { // 1mm threshold
-                        orbEntity.position = targetPosM
+                        orbEntity.position = targetPos
                     }
                 }
             }
