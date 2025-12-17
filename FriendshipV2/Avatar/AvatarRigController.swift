@@ -17,7 +17,7 @@ final class AvatarRigController {
     private let constraintNames: [String]
     
     private var updateTimer: Timer?
-    private var currentAnimationTask: Task<Void, Never>?
+    var currentAnimationTask: Task<Void, Never>?
     
     /// Initializes the avatar rig controller.
     /// - Parameters:
