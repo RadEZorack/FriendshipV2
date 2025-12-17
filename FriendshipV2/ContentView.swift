@@ -152,9 +152,9 @@ class OrbControlState: ObservableObject {
         // we should use Y for vertical and keep Z closer to 0 or negative
         let scaleFactor: Float = 0.01 // 1cm = 0.01m
         let defaultPositions: [String: SIMD3<Float>] = [
-            "head_end": SIMD3<Float>(0.0, 170.0 * scaleFactor, 0.0),      // 1.7m up (use Y axis)
-            "leftArm_end": SIMD3<Float>(70.0 * scaleFactor, 140.0 * scaleFactor, 0.0),  // 0.7m left, 1.4m up
-            "rightArm_end": SIMD3<Float>(-70.0 * scaleFactor, 140.0 * scaleFactor, 0.0), // 0.7m right, 1.4m up
+            "head_end": SIMD3<Float>(0.0, 0.0, 170.0 * scaleFactor),      // 1.7m up (use Y axis)
+            "leftArm_end": SIMD3<Float>(70.0 * scaleFactor, 0.0, 140.0 * scaleFactor),  // 0.7m left, 1.4m up
+            "rightArm_end": SIMD3<Float>(-70.0 * scaleFactor, 0.0, 140.0 * scaleFactor), // 0.7m right, 1.4m up
             "rightLeg_end": SIMD3<Float>(-20.0 * scaleFactor, 0.0, 0.0),  // 0.2m right
             "leftLeg_end": SIMD3<Float>(20.0 * scaleFactor, 0.0, 0.0)     // 0.2m left
         ]
@@ -704,14 +704,15 @@ struct ARViewContainer: UIViewRepresentable {
                     self.avatarRigController = rigController
                     
                     // Initialize orb positions in 3D space and create 3D orb entities
-                    DispatchQueue.main.async {
-                        // Don't initialize positions - let the animation set them
-                        // Wait for animation to apply, then create orbs at the actual positions
-                        // The animation duration is 1.0 second, wait a bit longer for it to settle
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-                            self.create3DOrbs(in: arView, anchor: anchorEntity, rigController: rigController)
-                        }
-                    }
+                    // DispatchQueue.main.async {
+                    //     // Don't initialize positions - let the animation set them
+                    //     // Wait for animation to apply, then create orbs at the actual positions
+                    //     // The animation duration is 1.0 second, wait a bit longer for it to settle
+                    //     DispatchQueue.main.asyncAfter(deadline: .now()) {
+                    //         // orbControlState!.initializeOrbPositions()
+                    //         self.create3DOrbs(in: arView, anchor: anchorEntity, rigController: rigController)
+                    //     }
+                    // }
 
                     // DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                     //     rigController.raiseRightHand()
@@ -862,6 +863,7 @@ struct ARViewContainer: UIViewRepresentable {
                         // Apply animation after a brief delay
                         DispatchQueue.main.asyncAfter(deadline: .now()) {
                             rigController.applyJointAnimation(animations)
+                            self.create3DOrbs(in: arView, anchor: anchorEntity, rigController: rigController)
                         }
                     } else {
                         print("⚠️ Failed to decode test animation JSON")
@@ -998,22 +1000,37 @@ struct ARViewContainer: UIViewRepresentable {
         
         func startOrbPositionSync(rigController: AvatarRigController, anchor: AnchorEntity) {
             orbSyncTimer?.invalidate()
-            // Disable automatic syncing - let orbs stay where they are unless manually moved
-            // The IK targets will move, but we don't want the orbs to chase them
-            // orbSyncTimer = Timer.scheduledTimer(withTimeInterval: 1.0/60.0, repeats: true) { [weak self] _ in
-            //     guard let self = self,
-            //           self.draggingOrb == nil else { return } // Don't sync while dragging
-            //     
-            //     for (orbName, orbEntity) in self.orbEntities {
-            //         let target = rigController.targetController.target(named: orbName)
-            //         let targetPosition = target.position(relativeTo: anchor)
-            //         // Only update if position changed significantly to avoid jitter
-            //         let distance = simd_length(orbEntity.position - targetPosition)
-            //         if distance > 0.001 { // 1mm threshold
-            //             orbEntity.position = targetPosition
-            //         }
-            //     }
-            // }
+            // Sync orbs to IK targets when not dragging
+            // This keeps the orbs connected to the avatar's limbs
+            orbSyncTimer = Timer.scheduledTimer(withTimeInterval: 1.0/60.0, repeats: true) { [weak self] _ in
+                guard let self = self,
+                      self.draggingOrb == nil else { return } // Don't sync while dragging
+                
+                for (orbName, orbEntity) in self.orbEntities {
+                    let target = rigController.targetController.target(named: orbName)
+                    // Get target position in animation coordinates (cm), convert to RealityKit (m)
+                    let targetTransform = target.transform
+                    let targetPosCm = targetTransform.translation
+                    
+                    // Convert from animation coordinates to RealityKit coordinates
+                    // When dragging, we convert: RealityKit (x, y, z) -> Animation (y, x, z) * 100
+                    // So reverse: Animation (x, y, z) -> RealityKit (y, x, z) / 100
+                    // Animation X (left/right) -> RealityKit Y (up/down)
+                    // Animation Y (up/down) -> RealityKit X (left/right)
+                    // Animation Z (in/out) -> RealityKit Z (in/out)
+                    let targetPosM = SIMD3<Float>(
+                        targetPosCm.x * 0.01,  // Animation Y (up/down) -> RealityKit X (left/right)
+                        targetPosCm.z * 0.01,  // Animation X (left/right) -> RealityKit Y (up/down)
+                        targetPosCm.y * 0.01   // Animation Z (in/out) -> RealityKit Z (in/out)
+                    )
+                    
+                    // Only update if position changed significantly to avoid jitter
+                    let distance = simd_length(orbEntity.position - targetPosM)
+                    if distance > 0.001 { // 1mm threshold
+                        orbEntity.position = targetPosM
+                    }
+                }
+            }
         }
         
         func stopOrbPositionSync() {
@@ -1164,8 +1181,8 @@ struct ARViewContainer: UIViewRepresentable {
                 // Z (in/out) -> Z (in/out animation)
                 let targetTranslation = SIMD3<Float>(
                     localPosition.x * 100.0,   // Y (up/down screen) becomes X (left/right animation)
-                    localPosition.x * 100.0,   // X (left/right screen) becomes Y (up/down animation)
-                    localPosition.x * 100.0    // Z (in/out) stays Z (in/out animation)
+                    localPosition.y * 100.0,   // X (left/right screen) becomes Y (up/down animation)
+                    localPosition.z * 100.0    // Z (in/out) stays Z (in/out animation)
                 )
                 newTransform.translation = targetTranslation
                 target.transform = newTransform
