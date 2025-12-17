@@ -20,7 +20,13 @@ import Combine
 class OrbControlState: ObservableObject {
     weak var coordinator: ARViewContainer.Coordinator?
     @Published var isReady: Bool = false
-    @Published var selectedAxis: OrbAxis? = nil
+    @Published var selectedOrbs: Set<String> = []
+    @Published var xSliderValue: Float = 0.0
+    @Published var ySliderValue: Float = 0.0
+    @Published var zSliderValue: Float = 0.0
+    
+    // Store original positions when sliders are first used
+    var originalOrbPositions: [String: SIMD3<Float>] = [:]
     
     func updateTargetPosition(orbName: String, axis: OrbAxis, translation: CGSize) {
         guard let coordinator = coordinator,
@@ -239,6 +245,130 @@ class OrbControlState: ObservableObject {
     func placeCharacter() {
         coordinator?.placeCharacterAtCenter()
     }
+    
+    func selectOrbFromCenter() {
+        coordinator?.selectOrbFromCenter()
+    }
+    
+    func toggleOrbSelection(_ orbName: String) {
+        if selectedOrbs.contains(orbName) {
+            selectedOrbs.remove(orbName)
+            // Remove from original positions if deselected
+            originalOrbPositions.removeValue(forKey: orbName)
+        } else {
+            selectedOrbs.insert(orbName)
+            // Store original position when first selected
+            if let coordinator = coordinator,
+               let anchor = coordinator.placedAnchor,
+               let orbEntity = coordinator.orbEntities[orbName],
+               let rigController = coordinator.avatarRigController {
+                let currentPos = orbEntity.position(relativeTo: anchor)
+                originalOrbPositions[orbName] = currentPos
+                
+                // Cancel any running animations to prevent resetting positions
+                if let animationTask = rigController.currentAnimationTask {
+                    animationTask.cancel()
+                    rigController.currentAnimationTask = nil
+                    print("🛑 Cancelled animation to preserve orb position")
+                }
+            }
+        }
+        // Update highlighting
+        coordinator?.updateOrbHighlighting()
+    }
+    
+    func updateOrbPositions(axis: OrbAxis, value: Float) {
+        guard let coordinator = coordinator,
+              let anchor = coordinator.placedAnchor,
+              let rigController = coordinator.avatarRigController else { return }
+        
+        // Cancel any running animations to prevent resetting positions
+        if let animationTask = rigController.currentAnimationTask {
+            animationTask.cancel()
+            rigController.currentAnimationTask = nil
+        }
+        
+        // Get the avatar's local coordinate axes from the anchor
+        let anchorTransform = anchor.transformMatrix(relativeTo: nil)
+        let anchorRight = SIMD3<Float>(anchorTransform.columns.0.x, anchorTransform.columns.0.y, anchorTransform.columns.0.z)
+        let anchorUp = SIMD3<Float>(anchorTransform.columns.1.x, anchorTransform.columns.1.y, anchorTransform.columns.1.z)
+        let anchorForward = SIMD3<Float>(anchorTransform.columns.2.x, anchorTransform.columns.2.y, anchorTransform.columns.2.z)
+        
+        // Calculate movement vector based on axis (invert X only, model is backwards)
+        let movement: SIMD3<Float>
+        switch axis {
+        case .x:
+            movement = anchorRight * (-value)  // Inverted (model is backwards)
+        case .y:
+            movement = anchorUp * value
+        case .z:
+            movement = anchorForward * value  // Not inverted - should match joint movement
+        }
+        
+        // Update all selected orbs
+        for orbName in selectedOrbs {
+            guard let orbEntity = coordinator.orbEntities[orbName],
+                  let originalPos = originalOrbPositions[orbName] else { continue }
+            
+            // Calculate new position: original + movement
+            // But we need to account for all slider values, not just the current one
+            // So we calculate the total movement from all three sliders
+            let totalMovement = anchorRight * (-zSliderValue) + anchorUp * ySliderValue + anchorForward * xSliderValue
+            let newPosition = originalPos + totalMovement
+            
+            // Update orb position
+            orbEntity.position = newPosition
+            
+            // Update IK target
+            let target = rigController.targetController.target(named: orbName)
+            var newTransform = target.transform
+            
+            // Convert from meters to centimeters and map coordinates
+            // Based on user's mapping: (x, y, z) -> (x, z, y) in cm
+            // Z axis needs to be inverted: when orb moves forward, joint should move forward
+            let targetTranslation = SIMD3<Float>(
+                newPosition.x * 100.0,  // X stays X
+                newPosition.z * 100.0,  // Z becomes Y (inverted so forward orb = forward joint)
+                newPosition.y * 100.0  // Y becomes Z
+            )
+            newTransform.translation = targetTranslation
+            target.transform = newTransform
+        }
+    }
+    
+    func resetSliders() {
+        // Reset slider values
+        xSliderValue = 0.0
+        ySliderValue = 0.0
+        zSliderValue = 0.0
+        
+        // Reset all selected orbs to their original positions (stored when first selected)
+        guard let coordinator = coordinator,
+              let anchor = coordinator.placedAnchor,
+              let rigController = coordinator.avatarRigController else { return }
+        
+        for orbName in selectedOrbs {
+            guard let orbEntity = coordinator.orbEntities[orbName],
+                  let originalPos = originalOrbPositions[orbName] else { continue }
+            
+            // Reset orb position to original
+            orbEntity.position = originalPos
+            
+            // Reset IK target
+            let target = rigController.targetController.target(named: orbName)
+            var newTransform = target.transform
+            
+            // Convert from meters to centimeters and map coordinates
+            // Z axis needs to be inverted to match the conversion in updateOrbPositions
+            let targetTranslation = SIMD3<Float>(
+                originalPos.x * 100.0,
+                originalPos.z * 100.0,  // Inverted to match updateOrbPositions
+                originalPos.y * 100.0
+            )
+            newTransform.translation = targetTranslation
+            target.transform = newTransform
+        }
+    }
 }
 
 struct ContentView: View {
@@ -279,6 +409,19 @@ struct ContentView: View {
                                 
                                 Spacer()
                                 
+                                // Select orb from center button
+                                Button(action: {
+                                    orbControlState.selectOrbFromCenter()
+                                }) {
+                                    Image(systemName: "hand.tap.fill")
+                                        .font(.title2)
+                                        .foregroundColor(.white)
+                                        .padding()
+                                        .background(Color.orange.opacity(0.8))
+                                        .clipShape(Circle())
+                                }
+                                .padding()
+                                
                                 // Mesh selector button
                                 Button(action: {
                                     showingMeshSelector = true
@@ -294,48 +437,118 @@ struct ContentView: View {
                             }
                             Spacer()
                             
-                            // Axis selection buttons
-                            HStack(spacing: 20) {
-                                // X axis button
-                                Button(action: {
-                                    orbControlState.selectedAxis = .x
-                                }) {
-                                    Text("X")
-                                        .font(.title2)
-                                        .fontWeight(.bold)
+                            // Slider controls for selected orbs
+                            if !orbControlState.selectedOrbs.isEmpty {
+                                VStack(spacing: 15) {
+                                    Text("Selected: \(orbControlState.selectedOrbs.count) orb(s)")
                                         .foregroundColor(.white)
-                                        .frame(width: 50, height: 50)
-                                        .background(orbControlState.selectedAxis == .x ? Color.red.opacity(0.8) : Color.red.opacity(0.4))
-                                        .clipShape(Circle())
+                                        .font(.headline)
+                                        .padding(.horizontal)
+                                        .padding(.vertical, 8)
+                                        .background(Color.black.opacity(0.6))
+                                        .cornerRadius(8)
+                                    
+                                    // X Slider
+                                    VStack(spacing: 5) {
+                                        HStack {
+                                            Text("X")
+                                                .foregroundColor(.white)
+                                                .font(.headline)
+                                                .frame(width: 20)
+                                            Slider(value: Binding(
+                                                get: { Double(orbControlState.xSliderValue) },
+                                                set: { newValue in
+                                                    orbControlState.xSliderValue = Float(newValue)
+                                                    orbControlState.updateOrbPositions(axis: .x, value: Float(newValue))
+                                                }
+                                            ), in: -2...2)
+                                            .tint(.red)
+                                            Text(String(format: "%.2f", orbControlState.xSliderValue))
+                                                .foregroundColor(.white)
+                                                .font(.caption)
+                                                .frame(width: 50)
+                                        }
+                                        .padding(.horizontal)
+                                        .padding(.vertical, 8)
+                                        .background(Color.black.opacity(0.6))
+                                        .cornerRadius(8)
+                                    }
+                                    
+                                    // Y Slider
+                                    VStack(spacing: 5) {
+                                        HStack {
+                                            Text("Y")
+                                                .foregroundColor(.white)
+                                                .font(.headline)
+                                                .frame(width: 20)
+                                            Slider(value: Binding(
+                                                get: { Double(orbControlState.ySliderValue) },
+                                                set: { newValue in
+                                                    orbControlState.ySliderValue = Float(newValue)
+                                                    orbControlState.updateOrbPositions(axis: .y, value: Float(newValue))
+                                                }
+                                            ), in: -2...2)
+                                            .tint(.green)
+                                            Text(String(format: "%.2f", orbControlState.ySliderValue))
+                                                .foregroundColor(.white)
+                                                .font(.caption)
+                                                .frame(width: 50)
+                                        }
+                                        .padding(.horizontal)
+                                        .padding(.vertical, 8)
+                                        .background(Color.black.opacity(0.6))
+                                        .cornerRadius(8)
+                                    }
+                                    
+                                    // Z Slider
+                                    VStack(spacing: 5) {
+                                        HStack {
+                                            Text("Z")
+                                                .foregroundColor(.white)
+                                                .font(.headline)
+                                                .frame(width: 20)
+                                            Slider(value: Binding(
+                                                get: { Double(orbControlState.zSliderValue) },
+                                                set: { newValue in
+                                                    orbControlState.zSliderValue = Float(newValue)
+                                                    orbControlState.updateOrbPositions(axis: .z, value: Float(newValue))
+                                                }
+                                            ), in: -2...2)
+                                            .tint(.blue)
+                                            Text(String(format: "%.2f", orbControlState.zSliderValue))
+                                                .foregroundColor(.white)
+                                                .font(.caption)
+                                                .frame(width: 50)
+                                        }
+                                        .padding(.horizontal)
+                                        .padding(.vertical, 8)
+                                        .background(Color.black.opacity(0.6))
+                                        .cornerRadius(8)
+                                    }
+                                    
+                                    // Reset button
+                                    Button(action: {
+                                        orbControlState.resetSliders()
+                                    }) {
+                                        Text("Reset")
+                                            .foregroundColor(.white)
+                                            .font(.headline)
+                                            .padding(.horizontal, 20)
+                                            .padding(.vertical, 10)
+                                            .background(Color.orange.opacity(0.8))
+                                            .cornerRadius(8)
+                                    }
                                 }
-                                
-                                // Y axis button
-                                Button(action: {
-                                    orbControlState.selectedAxis = .y
-                                }) {
-                                    Text("Y")
-                                        .font(.title2)
-                                        .fontWeight(.bold)
-                                        .foregroundColor(.white)
-                                        .frame(width: 50, height: 50)
-                                        .background(orbControlState.selectedAxis == .y ? Color.green.opacity(0.8) : Color.green.opacity(0.4))
-                                        .clipShape(Circle())
-                                }
-                                
-                                // Z axis button
-                                Button(action: {
-                                    orbControlState.selectedAxis = .z
-                                }) {
-                                    Text("Z")
-                                        .font(.title2)
-                                        .fontWeight(.bold)
-                                        .foregroundColor(.white)
-                                        .frame(width: 50, height: 50)
-                                        .background(orbControlState.selectedAxis == .z ? Color.blue.opacity(0.8) : Color.blue.opacity(0.4))
-                                        .clipShape(Circle())
-                                }
+                                .padding(.bottom, 30)
+                            } else {
+                                Text("Tap orbs to select them")
+                                    .foregroundColor(.white)
+                                    .font(.subheadline)
+                                    .padding()
+                                    .background(Color.black.opacity(0.6))
+                                    .cornerRadius(8)
+                                    .padding(.bottom, 30)
                             }
-                            .padding(.bottom, 30)
                         }
                     }
                     .tabItem {
@@ -511,9 +724,6 @@ struct ARViewContainer: UIViewRepresentable {
         var selectedMeshId: String?
         var orbControlState: OrbControlState?
         var orbEntities: [String: ModelEntity] = [:]
-        var draggingOrb: String?
-        var dragStartPosition: SIMD3<Float>?
-        var dragStartScreenLocation: CGPoint?
         
         func loadMeshUSDZ(meshId: String) async -> URL? {
             do {
@@ -563,6 +773,129 @@ struct ARViewContainer: UIViewRepresentable {
                 }
             } else if let firstResult = results.first {
                 placeModel(at: firstResult.worldTransform, in: arView)
+            }
+        }
+        
+        func selectOrbFromCenter() {
+            guard let arView = arView,
+                  let anchor = placedAnchor else {
+                print("⚠️ Cannot select orb: AR view or anchor not available")
+                return
+            }
+            
+            // Get the center point of the screen
+            let centerPoint = CGPoint(x: arView.bounds.midX, y: arView.bounds.midY)
+            
+            // First try to hit an orb entity directly at center
+            if let hitEntity = arView.entity(at: centerPoint) as? ModelEntity {
+                let orbName = hitEntity.name
+                if orbEntities[orbName] != nil {
+                    // Toggle selection
+                    orbControlState?.toggleOrbSelection(orbName)
+                    print("🎯 Toggled selection for orb: \(orbName) (direct hit at center), selected: \(orbControlState?.selectedOrbs.contains(orbName) ?? false)")
+                    return
+                }
+            }
+            
+            // If no direct orb hit, try to hit the avatar model and find closest orb
+            guard let modelEntity = placedModel else {
+                print("⚠️ Cannot select orb: No avatar model")
+                return
+            }
+            
+            // Create a ray from camera through center point
+            guard let frame = arView.session.currentFrame else {
+                print("⚠️ Cannot select orb: No AR frame")
+                return
+            }
+            let cameraTransform = frame.camera.transform
+            let cameraPosition = SIMD3<Float>(
+                cameraTransform.columns.3.x,
+                cameraTransform.columns.3.y,
+                cameraTransform.columns.3.z
+            )
+            
+            // Calculate ray direction (straight forward from camera center)
+            let forwardVector = SIMD3<Float>(-cameraTransform.columns.2.x, -cameraTransform.columns.2.y, -cameraTransform.columns.2.z)
+            let rightVector = SIMD3<Float>(cameraTransform.columns.0.x, cameraTransform.columns.0.y, cameraTransform.columns.0.z)
+            let upVector = SIMD3<Float>(cameraTransform.columns.1.x, cameraTransform.columns.1.y, cameraTransform.columns.1.z)
+            
+            // Normalize screen coordinates (center = 0, 0)
+            let normalizedPoint = CGPoint(x: 0.0, y: 0.0)
+            
+            // Get FOV
+            let intrinsics = frame.camera.intrinsics
+            let fx = intrinsics[0][0]
+            let imageWidth = Float(frame.camera.imageResolution.width)
+            let fov = 2.0 * atan(imageWidth / (2.0 * fx))
+            let aspect = Float(arView.bounds.width / arView.bounds.height)
+            
+            // Calculate ray direction (straight forward since we're at center)
+            let horizontalOffset = rightVector * Float(normalizedPoint.x) * tan(fov / 2.0) * aspect
+            let verticalOffset = upVector * Float(normalizedPoint.y) * tan(fov / 2.0)
+            let rayDirection = simd_normalize(forwardVector + horizontalOffset + verticalOffset)
+            
+            // Perform hit test on the avatar model
+            let rayOrigin = cameraPosition
+            let hitResults = arView.scene.raycast(
+                origin: rayOrigin,
+                direction: rayDirection,
+                query: .nearest,
+                mask: .all
+            )
+            
+            // Find the hit point on the avatar (if any)
+            var hitPoint: SIMD3<Float>?
+            for result in hitResults {
+                var entity: Entity? = result.entity
+                while let e = entity {
+                    if e == modelEntity || modelEntity.children.contains(e) {
+                        hitPoint = result.position
+                        break
+                    }
+                    entity = e.parent
+                }
+                if hitPoint != nil { break }
+            }
+            
+            // Find closest orb to the hit point or camera forward
+            let anchorTransform = anchor.transformMatrix(relativeTo: nil)
+            let anchorPosition = SIMD3<Float>(
+                anchorTransform.columns.3.x,
+                anchorTransform.columns.3.y,
+                anchorTransform.columns.3.z
+            )
+            
+            let searchPoint: SIMD3<Float>
+            if let hit = hitPoint {
+                // Use the hit point on the avatar
+                searchPoint = hit - anchorPosition
+            } else {
+                // Project to a reasonable depth (1 meter) and use that point
+                let testDepth: Float = 1.0
+                let testWorldPosition = cameraPosition + rayDirection * testDepth
+                searchPoint = testWorldPosition - anchorPosition
+            }
+            
+            // Find closest orb
+            var closestOrb: (name: String, entity: ModelEntity, distance: Float)?
+            var minDistance: Float = Float.greatestFiniteMagnitude
+            
+            for (orbName, orbEntity) in orbEntities {
+                let orbLocalPos = orbEntity.position(relativeTo: anchor)
+                let distance = simd_length(searchPoint - orbLocalPos)
+                // Increased threshold to 0.5m (50cm) to make it easier to select orbs
+                if distance < minDistance && distance < 0.5 {
+                    minDistance = distance
+                    closestOrb = (orbName, orbEntity, distance)
+                }
+            }
+            
+            if let closest = closestOrb {
+                orbControlState?.toggleOrbSelection(closest.name)
+                print("🎯 Toggled selection for orb: \(closest.name) (via center raycast, distance: \(minDistance)m), selected: \(orbControlState?.selectedOrbs.contains(closest.name) ?? false)")
+            } else {
+                print("⚠️ No orb found near center of screen (closest was > 0.5m away)")
             }
         }
         
@@ -973,10 +1306,10 @@ struct ARViewContainer: UIViewRepresentable {
             let orbNames = ["head_end", "leftArm_end", "rightArm_end", "rightLeg_end", "leftLeg_end"]
             let orbColors: [String: UIColor] = [
                 "head_end": .yellow,
-                "leftArm_end": .blue,
-                "rightArm_end": .red,
+                "leftArm_end": .cyan,
+                "rightArm_end": .magenta,
                 "rightLeg_end": .green,
-                "leftLeg_end": .purple
+                "leftLeg_end": .orange
             ]
             
             for orbName in orbNames {
@@ -1031,13 +1364,15 @@ struct ARViewContainer: UIViewRepresentable {
             
             print("✅ Created \(orbEntities.count) orbs in 3D space")
             
-            // Add gesture recognizer for dragging orbs (only if not already added)
-            if arView.gestureRecognizers?.contains(where: { $0 is UIPanGestureRecognizer }) == false {
-                let panGesture = UIPanGestureRecognizer(target: self, action: #selector(handleOrbDrag(_:)))
-                panGesture.maximumNumberOfTouches = 1
-                panGesture.minimumNumberOfTouches = 1
-                arView.addGestureRecognizer(panGesture)
+            // Add tap gesture recognizer for selecting orbs (only if not already added)
+            if arView.gestureRecognizers?.contains(where: { $0 is UITapGestureRecognizer }) == false {
+                let tapGesture = UITapGestureRecognizer(target: self, action: #selector(handleOrbTap(_:)))
+                tapGesture.numberOfTapsRequired = 1
+                arView.addGestureRecognizer(tapGesture)
             }
+            
+            // Update highlighting for initial state
+            updateOrbHighlighting()
             
             // Start updating orb positions to sync with IK targets
             startOrbPositionSync(rigController: rigController, anchor: anchor)
@@ -1047,13 +1382,17 @@ struct ARViewContainer: UIViewRepresentable {
         
         func startOrbPositionSync(rigController: AvatarRigController, anchor: AnchorEntity) {
             orbSyncTimer?.invalidate()
-            // Sync orbs to IK targets when not dragging
+            // Sync orbs to IK targets when not selected
             // This keeps the orbs connected to the avatar's limbs
             orbSyncTimer = Timer.scheduledTimer(withTimeInterval: 1.0/60.0, repeats: true) { [weak self] _ in
-                guard let self = self,
-                      self.draggingOrb == nil else { return } // Don't sync while dragging
+                guard let self = self else { return }
                 
                 for (orbName, orbEntity) in self.orbEntities {
+                    // Don't sync selected orbs - they're being controlled by sliders
+                    if self.orbControlState?.selectedOrbs.contains(orbName) == true {
+                        continue
+                    }
+                    
                     let target = rigController.targetController.target(named: orbName)
                     // Get target position in animation coordinates (cm), convert to RealityKit (m)
                     let targetTransform = target.transform
@@ -1085,254 +1424,156 @@ struct ARViewContainer: UIViewRepresentable {
             orbSyncTimer = nil
         }
         
-        @objc func handleOrbDrag(_ gesture: UIPanGestureRecognizer) {
+        @objc func handleOrbTap(_ gesture: UITapGestureRecognizer) {
             guard let arView = arView,
-                  let rigController = avatarRigController,
                   let anchor = placedAnchor else { return }
             
             let location = gesture.location(in: arView)
             
-            print("🎮 Gesture state: \(gesture.state.rawValue), location: \(location)")
+            // Try to hit an orb entity directly
+            if let hitEntity = arView.entity(at: location) as? ModelEntity {
+                let orbName = hitEntity.name
+                if orbEntities[orbName] != nil {
+                    // Toggle selection
+                    orbControlState?.toggleOrbSelection(orbName)
+                    print("🎯 Toggled selection for orb: \(orbName), selected: \(orbControlState?.selectedOrbs.contains(orbName) ?? false)")
+                    return
+                }
+            }
             
-            switch gesture.state {
-            case .began:
-                // Hit test to find which orb or avatar part was touched
-                // First try to hit an orb directly
-                var closestOrb: (name: String, entity: ModelEntity, distance: Float)?
-                var minDistance: Float = Float.greatestFiniteMagnitude
-                
-                // Try to hit an orb entity directly
-                if let hitEntity = arView.entity(at: location) as? ModelEntity {
-                    let orbName = hitEntity.name
-                    if orbEntities[orbName] != nil {
-                        // Check if an axis is selected
-                        guard let selectedAxis = orbControlState?.selectedAxis else {
-                            print("⚠️ Please select an axis (X, Y, or Z) before dragging")
-                            return
-                        }
-                        
-                        // Direct hit on an orb
-                        draggingOrb = orbName
-                        dragStartPosition = hitEntity.position(relativeTo: anchor)
-                        dragStartScreenLocation = location
-                        
-                        // Cancel any running animations to prevent resetting positions
-                        if let animationTask = rigController.currentAnimationTask {
-                            animationTask.cancel()
-                            rigController.currentAnimationTask = nil
-                            print("🛑 Cancelled animation to preserve orb position")
-                        }
-                        
-                        print("🎯 Started dragging orb: \(orbName) (direct hit) along \(selectedAxis) axis")
-                        return
+            // If no direct orb hit, try to hit the avatar model and find closest orb
+            guard let modelEntity = placedModel else { return }
+            
+            // Create a ray from camera through touch point
+            guard let frame = arView.session.currentFrame else { return }
+            let cameraTransform = frame.camera.transform
+            let cameraPosition = SIMD3<Float>(
+                cameraTransform.columns.3.x,
+                cameraTransform.columns.3.y,
+                cameraTransform.columns.3.z
+            )
+            
+            // Calculate ray direction
+            let forwardVector = SIMD3<Float>(-cameraTransform.columns.2.x, -cameraTransform.columns.2.y, -cameraTransform.columns.2.z)
+            let rightVector = SIMD3<Float>(cameraTransform.columns.0.x, cameraTransform.columns.0.y, cameraTransform.columns.0.z)
+            let upVector = SIMD3<Float>(cameraTransform.columns.1.x, cameraTransform.columns.1.y, cameraTransform.columns.1.z)
+            
+            // Normalize screen coordinates
+            let normalizedPoint = CGPoint(
+                x: (location.x / arView.bounds.width - 0.5) * 2.0,
+                y: (0.5 - location.y / arView.bounds.height) * 2.0
+            )
+            
+            // Get FOV
+            let intrinsics = frame.camera.intrinsics
+            let fx = intrinsics[0][0]
+            let imageWidth = Float(frame.camera.imageResolution.width)
+            let fov = 2.0 * atan(imageWidth / (2.0 * fx))
+            let aspect = Float(arView.bounds.width / arView.bounds.height)
+            
+            // Calculate ray direction
+            let horizontalOffset = rightVector * Float(normalizedPoint.x) * tan(fov / 2.0) * aspect
+            let verticalOffset = upVector * Float(normalizedPoint.y) * tan(fov / 2.0)
+            let rayDirection = simd_normalize(forwardVector + horizontalOffset + verticalOffset)
+            
+            // Perform hit test on the avatar model
+            let rayOrigin = cameraPosition
+            let hitResults = arView.scene.raycast(
+                origin: rayOrigin,
+                direction: rayDirection,
+                query: .nearest,
+                mask: .all
+            )
+            
+            // Find the hit point on the avatar (if any)
+            var hitPoint: SIMD3<Float>?
+            for result in hitResults {
+                var entity: Entity? = result.entity
+                while let e = entity {
+                    if e == modelEntity || modelEntity.children.contains(e) {
+                        hitPoint = result.position
+                        break
                     }
+                    entity = e.parent
                 }
-                
-                // If no direct orb hit, try to hit the avatar model
-                guard let modelEntity = placedModel else { return }
-                
-                // Create a ray from camera through touch point to hit test the avatar
-                guard let frame = arView.session.currentFrame else { return }
-                let cameraTransform = frame.camera.transform
-                let cameraPosition = SIMD3<Float>(
-                    cameraTransform.columns.3.x,
-                    cameraTransform.columns.3.y,
-                    cameraTransform.columns.3.z
-                )
-                
-                // Calculate ray direction from camera through touch point
-                let forwardVector = SIMD3<Float>(-cameraTransform.columns.2.x, -cameraTransform.columns.2.y, -cameraTransform.columns.2.z)
-                let rightVector = SIMD3<Float>(cameraTransform.columns.0.x, cameraTransform.columns.0.y, cameraTransform.columns.0.z)
-                let upVector = SIMD3<Float>(cameraTransform.columns.1.x, cameraTransform.columns.1.y, cameraTransform.columns.1.z)
-                
-                // Normalize screen coordinates
-                let normalizedPoint = CGPoint(
-                    x: (location.x / arView.bounds.width - 0.5) * 2.0,
-                    y: (0.5 - location.y / arView.bounds.height) * 2.0
-                )
-                
-                // Get FOV
-                let intrinsics = frame.camera.intrinsics
-                let fx = intrinsics[0][0]
-                let imageWidth = Float(frame.camera.imageResolution.width)
-                let fov = 2.0 * atan(imageWidth / (2.0 * fx))
-                let aspect = Float(arView.bounds.width / arView.bounds.height)
-                
-                // Calculate ray direction
-                let horizontalOffset = rightVector * Float(normalizedPoint.x) * tan(fov / 2.0) * aspect
-                let verticalOffset = upVector * Float(normalizedPoint.y) * tan(fov / 2.0)
-                let rayDirection = simd_normalize(forwardVector + horizontalOffset + verticalOffset)
-                
-                // Perform hit test on the avatar model using RealityKit's scene raycast
-                let rayOrigin = cameraPosition
-                let hitResults = arView.scene.raycast(
-                    origin: rayOrigin,
-                    direction: rayDirection,
-                    query: .nearest,
-                    mask: .all
-                )
-                
-                // Find the hit point on the avatar (if any)
-                var hitPoint: SIMD3<Float>?
-                for result in hitResults {
-                    // Check if we hit the avatar model or any of its children
-                    var entity: Entity? = result.entity
-                    while let e = entity {
-                        if e == modelEntity || modelEntity.children.contains(e) {
-                            hitPoint = result.position
-                            break
-                        }
-                        entity = e.parent
-                    }
-                    if hitPoint != nil { break }
+                if hitPoint != nil { break }
+            }
+            
+            // Find closest orb to the hit point
+            let anchorTransform = anchor.transformMatrix(relativeTo: nil)
+            let anchorPosition = SIMD3<Float>(
+                anchorTransform.columns.3.x,
+                anchorTransform.columns.3.y,
+                anchorTransform.columns.3.z
+            )
+            
+            let searchPoint: SIMD3<Float>
+            if let hit = hitPoint {
+                searchPoint = hit - anchorPosition
+            } else {
+                let testDepth: Float = 1.0
+                let testWorldPosition = cameraPosition + rayDirection * testDepth
+                searchPoint = testWorldPosition - anchorPosition
+            }
+            
+            // Find closest orb
+            var closestOrb: (name: String, entity: ModelEntity, distance: Float)?
+            var minDistance: Float = Float.greatestFiniteMagnitude
+            
+            for (orbName, orbEntity) in orbEntities {
+                let orbLocalPos = orbEntity.position(relativeTo: anchor)
+                let distance = simd_length(searchPoint - orbLocalPos)
+                if distance < minDistance && distance < 0.3 {
+                    minDistance = distance
+                    closestOrb = (orbName, orbEntity, distance)
                 }
-                
-                // If we hit the avatar, find the closest orb to the hit point
-                // Otherwise, find closest orb to the ray
-                let anchorTransform = anchor.transformMatrix(relativeTo: nil)
-                let anchorPosition = SIMD3<Float>(
-                    anchorTransform.columns.3.x,
-                    anchorTransform.columns.3.y,
-                    anchorTransform.columns.3.z
-                )
-                
-                let searchPoint: SIMD3<Float>
-                if let hit = hitPoint {
-                    // Use the hit point on the avatar
-                    searchPoint = hit - anchorPosition
-                } else {
-                    // Project to a reasonable depth (1 meter) and use that point
-                    let testDepth: Float = 1.0
-                    let testWorldPosition = cameraPosition + rayDirection * testDepth
-                    searchPoint = testWorldPosition - anchorPosition
-                }
-                
-                // Find closest orb to the search point
-                for (orbName, orbEntity) in orbEntities {
-                    let orbLocalPos = orbEntity.position(relativeTo: anchor)
-                    let distance = simd_length(searchPoint - orbLocalPos)
-                    // Threshold of 0.3m (30cm) to make it easier to grab orbs
-                    if distance < minDistance && distance < 0.3 {
-                        minDistance = distance
-                        closestOrb = (orbName, orbEntity, distance)
-                    }
-                }
-                
-                if let closest = closestOrb {
-                    // Check if an axis is selected
-                    guard let selectedAxis = orbControlState?.selectedAxis else {
-                        print("⚠️ Please select an axis (X, Y, or Z) before dragging")
-                        return
-                    }
-                    
-                    draggingOrb = closest.name
-                    dragStartPosition = closest.entity.position(relativeTo: anchor)
-                    dragStartScreenLocation = location
-                    
-                    // Cancel any running animations to prevent resetting positions
-                    if let animationTask = rigController.currentAnimationTask {
-                        animationTask.cancel()
-                        rigController.currentAnimationTask = nil
-                        print("🛑 Cancelled animation to preserve orb position")
-                    }
-                    
-                    print("🎯 Started dragging orb: \(closest.name) along \(selectedAxis) axis")
-                } else {
-                    print("⚠️ No orb found near touch location")
-                }
-                
-            case .changed:
-                guard let orbName = draggingOrb else {
-                    print("⚠️ .changed: No draggingOrb")
-                    return
-                }
-                guard let orbEntity = orbEntities[orbName] else {
-                    print("⚠️ .changed: No orbEntity for \(orbName)")
-                    return
-                }
-                guard let selectedAxis = orbControlState?.selectedAxis else {
-                    print("⚠️ .changed: No selectedAxis")
-                    return
-                }
-                guard let startPos = dragStartPosition else {
-                    print("⚠️ .changed: No dragStartPosition")
-                    return
-                }
-                guard let startScreenLoc = dragStartScreenLocation else {
-                    print("⚠️ .changed: No dragStartScreenLocation")
-                    return
-                }
-                
-                // Calculate drag delta in screen space
-                let deltaX = location.x - startScreenLoc.x
-                let deltaY = location.y - startScreenLoc.y
-                
-                print("🔄 Drag update: \(orbName), axis: \(selectedAxis), delta: (\(deltaX), \(deltaY))")
-                
-                // Get the avatar's local coordinate axes from the anchor
-                let anchorTransform = anchor.transformMatrix(relativeTo: nil)
-                let anchorRight = SIMD3<Float>(anchorTransform.columns.0.x, anchorTransform.columns.0.y, anchorTransform.columns.0.z)
-                let anchorUp = SIMD3<Float>(anchorTransform.columns.1.x, anchorTransform.columns.1.y, anchorTransform.columns.1.z)
-                let anchorForward = SIMD3<Float>(anchorTransform.columns.2.x, anchorTransform.columns.2.y, anchorTransform.columns.2.z)
-                
-                // Calculate movement along the selected axis in avatar's local space
-                let sensitivity: Float = 0.01 // 1cm per pixel
-                var newPosition = startPos
-                
-                switch selectedAxis {
-                case .x:
-                    // Move along X axis (left/right in avatar's local space)
-                    // Use screen X movement projected onto avatar's right vector
-                    let movement = anchorRight * Float(deltaX) * sensitivity
-                    newPosition = startPos + movement
-                    
-                case .y:
-                    // Move along Y axis (up/down in avatar's local space)
-                    // Use screen Y movement (inverted) projected onto avatar's up vector
-                    let movement = anchorUp * Float(-deltaY) * sensitivity
-                    newPosition = startPos + movement
-                    
-                case .z:
-                    // Move along Z axis (forward/back in avatar's local space)
-                    // Use screen Y movement (inverted) projected onto avatar's forward vector
-                    let movement = anchorForward * Float(-deltaY) * sensitivity
-                    newPosition = startPos + movement
-                }
-                
-                // Update orb position
-                orbEntity.position = newPosition
-                print("📍 Updated orb position: \(newPosition)")
-                
-                // Update IK target
-                // Convert from RealityKit coordinates to animation coordinates
-                // Animation uses: X=left/right, Y=up/down, Z=in/out (in cm)
-                let target = rigController.targetController.target(named: orbName)
-                var newTransform = target.transform
-                
-                // Convert from meters to centimeters and map coordinates
-                // Based on user's mapping: (x, y, z) -> (x, z, y) in cm
-                let targetTranslation = SIMD3<Float>(
-                    newPosition.x * 100.0,  // X stays X
-                    newPosition.z * 100.0,  // Z becomes Y
-                    newPosition.y * 100.0  // Y becomes Z
-                )
-                newTransform.translation = targetTranslation
-                target.transform = newTransform
-                print("🎯 Updated IK target translation: \(targetTranslation)")
-                
-            case .ended, .cancelled:
-                draggingOrb = nil
-                dragStartPosition = nil
-                dragStartScreenLocation = nil
-                
-            case .failed:
-                draggingOrb = nil
-                dragStartPosition = nil
-                
-            @unknown default:
-                break
+            }
+            
+            if let closest = closestOrb {
+                orbControlState?.toggleOrbSelection(closest.name)
+                print("🎯 Toggled selection for orb: \(closest.name) (via raycast), selected: \(orbControlState?.selectedOrbs.contains(closest.name) ?? false)")
             }
         }
+        
+        func updateOrbHighlighting() {
+            guard let orbControlState = orbControlState else { return }
+            
+            for (orbName, orbEntity) in orbEntities {
+                let isSelected = orbControlState.selectedOrbs.contains(orbName)
+                
+                // Update material color based on selection
+                if let material = orbEntity.model?.materials.first as? UnlitMaterial {
+                    let baseColor: UIColor
+                    switch orbName {
+                    case "head_end":
+                        baseColor = .yellow
+                    case "leftArm_end":
+                        baseColor = .cyan
+                    case "rightArm_end":
+                        baseColor = .magenta
+                    case "leftLeg_end":
+                        baseColor = .orange
+                    case "rightLeg_end":
+                        baseColor = .purple
+                    default:
+                        baseColor = .white
+                    }
+                    
+                    // Highlight selected orbs with brighter color and larger size
+                    let finalColor = isSelected ? baseColor.withAlphaComponent(1.0) : baseColor.withAlphaComponent(0.6)
+                    let newMaterial = UnlitMaterial(color: finalColor)
+                    orbEntity.model?.materials = [newMaterial]
+                    
+                    // Scale up selected orbs slightly
+                    if isSelected {
+                        orbEntity.scale = SIMD3<Float>(1.2, 1.2, 1.2)
+                    } else {
+                        orbEntity.scale = SIMD3<Float>(1.0, 1.0, 1.0)
+                    }
+                }
+            }
+        }
+        
         
         func session(_ session: ARSession, didUpdate frame: ARFrame) {
             // Optionally, you could continuously update cube position here
