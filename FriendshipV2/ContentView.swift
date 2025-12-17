@@ -1019,9 +1019,9 @@ struct ARViewContainer: UIViewRepresentable {
                     // Animation Y (up/down) -> RealityKit X (left/right)
                     // Animation Z (in/out) -> RealityKit Z (in/out)
                     let targetPosM = SIMD3<Float>(
-                        targetPosCm.x * 0.01,  // Animation Y (up/down) -> RealityKit X (left/right)
-                        targetPosCm.z * 0.01,  // Animation X (left/right) -> RealityKit Y (up/down)
-                        targetPosCm.y * 0.01   // Animation Z (in/out) -> RealityKit Z (in/out)
+                        targetPosCm.x * 0.01,  // Animation X (left/right) -> RealityKit X (left/right)
+                        targetPosCm.z * 0.01,  // Animation Z (in/out) -> RealityKit Y (up/down)
+                        targetPosCm.y * 0.01   // Animation Y (up/down) -> RealityKit Z (in/out)
                     )
                     
                     // Only update if position changed significantly to avoid jitter
@@ -1047,36 +1047,116 @@ struct ARViewContainer: UIViewRepresentable {
             
             switch gesture.state {
             case .began:
-                // Hit test to find which orb was touched
-                // Use ARKit raycasting to find the closest orb
+                // Hit test to find which orb or avatar part was touched
+                // First try to hit an orb directly
                 var closestOrb: (name: String, entity: ModelEntity, distance: Float)?
                 var minDistance: Float = Float.greatestFiniteMagnitude
                 
-                // Raycast from touch location
-                let results = arView.raycast(from: location, allowing: .estimatedPlane, alignment: .any)
-                guard let firstResult = results.first else { return }
+                // Try to hit an orb entity directly
+                if let hitEntity = arView.entity(at: location) as? ModelEntity {
+                    let orbName = hitEntity.name
+                    if orbEntities[orbName] != nil {
+                        // Direct hit on an orb
+                        draggingOrb = orbName
+                        dragStartPosition = hitEntity.position(relativeTo: anchor)
+                        
+                        // Cancel any running animations to prevent resetting positions
+                        if let animationTask = rigController.currentAnimationTask {
+                            animationTask.cancel()
+                            rigController.currentAnimationTask = nil
+                            print("🛑 Cancelled animation to preserve orb position")
+                        }
+                        
+                        print("🎯 Started dragging orb: \(orbName) (direct hit)")
+                        return
+                    }
+                }
                 
-                let raycastWorldPosition = SIMD3<Float>(
-                    firstResult.worldTransform.columns.3.x,
-                    firstResult.worldTransform.columns.3.y,
-                    firstResult.worldTransform.columns.3.z
+                // If no direct orb hit, try to hit the avatar model
+                guard let modelEntity = placedModel else { return }
+                
+                // Create a ray from camera through touch point to hit test the avatar
+                guard let frame = arView.session.currentFrame else { return }
+                let cameraTransform = frame.camera.transform
+                let cameraPosition = SIMD3<Float>(
+                    cameraTransform.columns.3.x,
+                    cameraTransform.columns.3.y,
+                    cameraTransform.columns.3.z
                 )
                 
-                // Convert raycast position to anchor's local space for comparison
+                // Calculate ray direction from camera through touch point
+                let forwardVector = SIMD3<Float>(-cameraTransform.columns.2.x, -cameraTransform.columns.2.y, -cameraTransform.columns.2.z)
+                let rightVector = SIMD3<Float>(cameraTransform.columns.0.x, cameraTransform.columns.0.y, cameraTransform.columns.0.z)
+                let upVector = SIMD3<Float>(cameraTransform.columns.1.x, cameraTransform.columns.1.y, cameraTransform.columns.1.z)
+                
+                // Normalize screen coordinates
+                let normalizedPoint = CGPoint(
+                    x: (location.x / arView.bounds.width - 0.5) * 2.0,
+                    y: (0.5 - location.y / arView.bounds.height) * 2.0
+                )
+                
+                // Get FOV
+                let intrinsics = frame.camera.intrinsics
+                let fx = intrinsics[0][0]
+                let imageWidth = Float(frame.camera.imageResolution.width)
+                let fov = 2.0 * atan(imageWidth / (2.0 * fx))
+                let aspect = Float(arView.bounds.width / arView.bounds.height)
+                
+                // Calculate ray direction
+                let horizontalOffset = rightVector * Float(normalizedPoint.x) * tan(fov / 2.0) * aspect
+                let verticalOffset = upVector * Float(normalizedPoint.y) * tan(fov / 2.0)
+                let rayDirection = simd_normalize(forwardVector + horizontalOffset + verticalOffset)
+                
+                // Perform hit test on the avatar model using RealityKit's scene raycast
+                let rayOrigin = cameraPosition
+                let hitResults = arView.scene.raycast(
+                    origin: rayOrigin,
+                    direction: rayDirection,
+                    query: .nearest,
+                    mask: .all
+                )
+                
+                // Find the hit point on the avatar (if any)
+                var hitPoint: SIMD3<Float>?
+                for result in hitResults {
+                    // Check if we hit the avatar model or any of its children
+                    var entity: Entity? = result.entity
+                    while let e = entity {
+                        if e == modelEntity || modelEntity.children.contains(e) {
+                            hitPoint = result.position
+                            break
+                        }
+                        entity = e.parent
+                    }
+                    if hitPoint != nil { break }
+                }
+                
+                // If we hit the avatar, find the closest orb to the hit point
+                // Otherwise, find closest orb to the ray
                 let anchorTransform = anchor.transformMatrix(relativeTo: nil)
                 let anchorPosition = SIMD3<Float>(
                     anchorTransform.columns.3.x,
                     anchorTransform.columns.3.y,
                     anchorTransform.columns.3.z
                 )
-                let raycastLocalPosition = raycastWorldPosition - anchorPosition
                 
-                // Find closest orb to raycast position
+                let searchPoint: SIMD3<Float>
+                if let hit = hitPoint {
+                    // Use the hit point on the avatar
+                    searchPoint = hit - anchorPosition
+                } else {
+                    // Project to a reasonable depth (1 meter) and use that point
+                    let testDepth: Float = 1.0
+                    let testWorldPosition = cameraPosition + rayDirection * testDepth
+                    searchPoint = testWorldPosition - anchorPosition
+                }
+                
+                // Find closest orb to the search point
                 for (orbName, orbEntity) in orbEntities {
                     let orbLocalPos = orbEntity.position(relativeTo: anchor)
-                    let distance = simd_length(raycastLocalPosition - orbLocalPos)
-                    // Increase threshold to 0.5m (50cm) to make it easier to grab orbs
-                    if distance < minDistance && distance < 0.5 {
+                    let distance = simd_length(searchPoint - orbLocalPos)
+                    // Threshold of 0.3m (30cm) to make it easier to grab orbs
+                    if distance < minDistance && distance < 0.3 {
                         minDistance = distance
                         closestOrb = (orbName, orbEntity, distance)
                     }
@@ -1122,15 +1202,16 @@ struct ARViewContainer: UIViewRepresentable {
                 
                 // If depth is invalid, use the drag start position depth
                 if depth <= 0 {
-                    if let startPos = dragStartPosition {
-                        let anchorWorldPos = anchor.position(relativeTo: nil)
-                        let startWorldPos = anchorWorldPos + startPos
-                        let toStart = startWorldPos - cameraPosition
-                        depth = simd_dot(toStart, forwardVector)
-                    }
-                    if depth <= 0 {
-                        depth = 1.0 // Default 1 meter if still invalid
-                    }
+                    break
+                    // if let startPos = dragStartPosition {
+                    //     let anchorWorldPos = anchor.position(relativeTo: nil)
+                    //     let startWorldPos = anchorWorldPos + startPos
+                    //     let toStart = startWorldPos - cameraPosition
+                    //     depth = simd_dot(toStart, forwardVector)
+                    // }
+                    // if depth <= 0 {
+                    //     depth = 1.0 // Default 1 meter if still invalid
+                    // }
                 }
                 
                 // Normalize screen coordinates (-1 to 1)
@@ -1140,19 +1221,42 @@ struct ARViewContainer: UIViewRepresentable {
                 )
                 
                 // Get FOV from camera intrinsics
+                // Camera intrinsics are always in landscape orientation
                 let intrinsics = frame.camera.intrinsics
                 let fx = intrinsics[0][0]
+                let fy = intrinsics[1][1]
+                
+                // Camera image resolution (always landscape)
                 let imageWidth = Float(frame.camera.imageResolution.width)
-                let fov = 2.0 * atan(imageWidth / (2.0 * fx))
-                let aspect = Float(arView.bounds.width / arView.bounds.height)
+                let imageHeight = Float(frame.camera.imageResolution.height)
+                
+                // Calculate FOV - use horizontal FOV for width calculations
+                let horizontalFOV = 2.0 * atan(imageWidth / (2.0 * fx))
+                let verticalFOV = 2.0 * atan(imageHeight / (2.0 * fy))
+                
+                // Get view bounds (changes with device orientation)
+                let viewWidth = Float(arView.bounds.width)
+                let viewHeight = Float(arView.bounds.height)
+                let viewAspect = viewWidth / viewHeight
+                
+                // Check device orientation to determine which FOV to use
+                let deviceOrientation = UIDevice.current.orientation
+                let isPortrait = deviceOrientation == .portrait || deviceOrientation == .portraitUpsideDown
+                
+                // Use appropriate FOV based on orientation
+                // In portrait: view is taller, so use vertical FOV for horizontal movement
+                // In landscape: view is wider, so use horizontal FOV for horizontal movement
+                let effectiveHorizontalFOV = isPortrait ? verticalFOV : horizontalFOV
+                let effectiveVerticalFOV = isPortrait ? horizontalFOV : verticalFOV
                 
                 // Calculate camera basis vectors
                 let rightVector = SIMD3<Float>(cameraTransform.columns.0.x, cameraTransform.columns.0.y, cameraTransform.columns.0.z)
                 let upVector = SIMD3<Float>(cameraTransform.columns.1.x, cameraTransform.columns.1.y, cameraTransform.columns.1.z)
                 
                 // Project to plane at current depth, parallel to screen
-                let horizontalOffset = rightVector * Float(normalizedPoint.x) * depth * tan(fov / 2.0) * aspect
-                let verticalOffset = upVector * Float(normalizedPoint.y) * depth * tan(fov / 2.0)
+                // Use the appropriate FOV for each axis based on orientation
+                let horizontalOffset = rightVector * Float(normalizedPoint.x) * depth * tan(effectiveHorizontalFOV / 2.0)
+                let verticalOffset = upVector * Float(normalizedPoint.y) * depth * tan(effectiveVerticalFOV / 2.0)
                 
                 // Calculate new world position
                 let newWorldPosition = cameraPosition + forwardVector * depth + horizontalOffset + verticalOffset
@@ -1180,9 +1284,9 @@ struct ARViewContainer: UIViewRepresentable {
                 // Y (up/down screen) -> X (left/right animation)
                 // Z (in/out) -> Z (in/out animation)
                 let targetTranslation = SIMD3<Float>(
-                    localPosition.x * 100.0,   // Y (up/down screen) becomes X (left/right animation)
-                    localPosition.y * 100.0,   // X (left/right screen) becomes Y (up/down animation)
-                    localPosition.z * 100.0    // Z (in/out) stays Z (in/out animation)
+                    localPosition.x,// * 100.0,   // Y (up/down screen) becomes X (left/right animation)
+                    localPosition.z,// * 100.0,   // X (left/right screen) becomes Y (up/down animation)
+                    localPosition.y,// * 100.0    // Z (in/out) stays Z (in/out animation)
                 )
                 newTransform.translation = targetTranslation
                 target.transform = newTransform
