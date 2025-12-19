@@ -297,8 +297,9 @@ struct ARViewContainer: UIViewRepresentable {
         var selectedIKTarget: String?
         var shouldPlaceAvatar: Bool = false
         var onAvatarPlaced: (() -> Void)?
+        var currentMesh: MeshStatus?  // Store the current mesh data
         
-        func loadMeshUSDZ(meshId: String) async -> URL? {
+        func loadMeshUSDZ(meshId: String) async -> (url: URL?, mesh: MeshStatus?) {
             do {
                 // Fetch mesh details
                 let mesh = try await MeshGenerationService.shared.fetchMesh(meshId: meshId)
@@ -307,7 +308,7 @@ struct ARViewContainer: UIViewRepresentable {
                 guard let usdzUrlString = mesh.animationUsdzUrl,
                       let usdzURL = URL(string: usdzUrlString) else {
                     print("⚠️ Mesh \(meshId) does not have a USDZ URL")
-                    return nil
+                    return (nil, mesh)
                 }
                 
                 // Download and cache the USDZ file
@@ -315,10 +316,10 @@ struct ARViewContainer: UIViewRepresentable {
                 let cachedURL = try await FileCacheService.shared.downloadAndCache(url: usdzURL, filename: filename)
                 
                 print("✅ Loaded mesh USDZ from cache: \(cachedURL.path)")
-                return cachedURL
+                return (cachedURL, mesh)
             } catch {
                 print("❌ Failed to load mesh USDZ: \(error.localizedDescription)")
-                return nil
+                return (nil, nil)
             }
         }
         
@@ -444,6 +445,59 @@ struct ARViewContainer: UIViewRepresentable {
             }
             
             print("✅ Moved IK target \(targetName) to raycast intersection at \(localTransform.translation)")
+            
+            // Save updated pose to database
+            saveCurrentPoseToDatabase(rigController: rigController)
+        }
+        
+        /// Captures the current pose from all IK targets and saves it to the database
+        func saveCurrentPoseToDatabase(rigController: AvatarRigController) {
+            guard let meshId = self.selectedMeshId else {
+                print("⚠️ No mesh ID selected, cannot save pose")
+                return
+            }
+            
+            // Get all end targets (these are the ones we care about for the initial pose)
+            let endTargetNames = ["head_end", "leftArm_end", "rightArm_end", "leftLeg_end", "rightLeg_end"]
+            var changes: [String: [[Double]]] = [:]
+            
+            // Capture current transforms for each end target
+            for targetName in endTargetNames {
+                let target = rigController.targetController.target(named: targetName)
+                let transform = target.transform
+                let matrix = transform.matrix
+                
+                // Convert simd_float4x4 to 2D array format
+                let matrixArray: [[Double]] = [
+                    [Double(matrix.columns.0.x), Double(matrix.columns.0.y), Double(matrix.columns.0.z), Double(matrix.columns.0.w)],
+                    [Double(matrix.columns.1.x), Double(matrix.columns.1.y), Double(matrix.columns.1.z), Double(matrix.columns.1.w)],
+                    [Double(matrix.columns.2.x), Double(matrix.columns.2.y), Double(matrix.columns.2.z), Double(matrix.columns.2.w)],
+                    [Double(matrix.columns.3.x), Double(matrix.columns.3.y), Double(matrix.columns.3.z), Double(matrix.columns.3.w)]
+                ]
+                changes[targetName] = matrixArray
+            }
+            
+            // Create the pose data in the expected format
+            let poseData: [[String: Any]] = [
+                [
+                    "duration": 0.0,
+                    "space": "local",
+                    "changes": changes
+                ]
+            ]
+            
+            // Save to database asynchronously
+            Task {
+                do {
+                    try await MeshGenerationService.shared.updateInitialPose(
+                        meshId: meshId,
+                        initialPose: poseData
+                    )
+                    print("✅ Successfully updated initial pose in database for mesh \(meshId)")
+                } catch {
+                    print("⚠️ Failed to update initial pose in database: \(error.localizedDescription)")
+                }
+            }
         }
         
         func placeModel(at transform: simd_float4x4, in arView: ARView) {
@@ -464,10 +518,14 @@ struct ARViewContainer: UIViewRepresentable {
             Task {
                 do {
                     var modelURL: URL?
+                    var fetchedMesh: MeshStatus? = nil
                     
                     // Try to load from selected mesh first
                     if let meshId = self.selectedMeshId {
-                        modelURL = await self.loadMeshUSDZ(meshId: meshId)
+                        let result = await self.loadMeshUSDZ(meshId: meshId)
+                        modelURL = result.url
+                        fetchedMesh = result.mesh
+                        self.currentMesh = fetchedMesh
                     }
                     
                     // Fallback to bundle file if no mesh selected or loading failed
@@ -694,58 +752,84 @@ struct ARViewContainer: UIViewRepresentable {
                     // }
                     // ]
                     // """
-                    let startingAnimationJSON = """
-                    [
-                    {
-                      "duration": 0.0,
-                      "space": "local",
-                      "changes": {
-                        "head_end": [
-                          [ 1.0,  0.0,  0.0, 0.0 ],
-                          [ 0.0,  1.0,  0.0, 0.0 ],
-                          [ 0.0,  0.0,  1.0, 0.0 ],
-                          [ 0.0,  0.0,  170.0, 1.0 ]
-                        ],
-                        "leftArm_end": [
-                          [ 1.0,  0.0,  0.0, 0.0 ],
-                          [ 0.0,  1.0,  0.0, 0.0 ],
-                          [ 0.0,  0.0,  1.0, 0.0 ],
-                          [ 70.0,  0.0,  140.0, 1.0 ]
-                        ],
-                        "rightArm_end": [
-                          [ 1.0,  0.0,  0.0, 0.0 ],
-                          [ 0.0,  1.0,  0.0, 0.0 ],
-                          [ 0.0,  0.0,  1.0, 0.0 ],
-                          [ -70.0,  0.0,  140.0, 1.0 ]
-                        ],
-                        "rightLeg_end": [
-                          [ 1.0,  0.0,  0.0, 0.0 ],
-                          [ 0.0,  1.0,  0.0, 0.0 ],
-                          [ 0.0,  0.0,  1.0, 0.0 ],
-                          [ -20.0, 0.0,  0.0, 1.0 ]
-                        ],
-                        "leftLeg_end": [
-                          [ 1.0,  0.0,  0.0, 0.0 ],
-                          [ 0.0,  1.0,  0.0, 0.0 ],
-                          [ 0.0,  0.0,  1.0, 0.0 ],
-                          [ 20.0, 0.0,  0.0, 1.0 ]
+                    // Determine which initial pose to use: from DB or default
+                    var initialPoseData: [[String: Any]]? = nil
+                    var shouldSavePose = false
+                    
+                    // First, try to use saved pose from database
+                    if let savedPose = fetchedMesh?.initialPose, !savedPose.isEmpty {
+                        print("✅ Found saved initial pose in database, using it")
+                        initialPoseData = savedPose
+                    } else {
+                        // Use default pose and save it
+                        print("ℹ️ No saved pose found, using default and saving to database")
+                        let defaultPose: [[String: Any]] = [
+                            [
+                                "duration": 0.0,
+                                "space": "local",
+                                "changes": [
+                                    "head_end": [
+                                        [1.0, 0.0, 0.0, 0.0],
+                                        [0.0, 1.0, 0.0, 0.0],
+                                        [0.0, 0.0, 1.0, 0.0],
+                                        [0.0, 0.0, 170.0, 1.0]
+                                    ],
+                                    "leftArm_end": [
+                                        [1.0, 0.0, 0.0, 0.0],
+                                        [0.0, 1.0, 0.0, 0.0],
+                                        [0.0, 0.0, 1.0, 0.0],
+                                        [70.0, 0.0, 140.0, 1.0]
+                                    ],
+                                    "rightArm_end": [
+                                        [1.0, 0.0, 0.0, 0.0],
+                                        [0.0, 1.0, 0.0, 0.0],
+                                        [0.0, 0.0, 1.0, 0.0],
+                                        [-70.0, 0.0, 140.0, 1.0]
+                                    ],
+                                    "rightLeg_end": [
+                                        [1.0, 0.0, 0.0, 0.0],
+                                        [0.0, 1.0, 0.0, 0.0],
+                                        [0.0, 0.0, 1.0, 0.0],
+                                        [-20.0, 0.0, 0.0, 1.0]
+                                    ],
+                                    "leftLeg_end": [
+                                        [1.0, 0.0, 0.0, 0.0],
+                                        [0.0, 1.0, 0.0, 0.0],
+                                        [0.0, 0.0, 1.0, 0.0],
+                                        [20.0, 0.0, 0.0, 1.0]
+                                    ]
+                                ]
+                            ]
                         ]
-                      }
+                        initialPoseData = defaultPose
+                        shouldSavePose = true
                     }
-                    ]
-                    """
-
-                    if let jsonData = startingAnimationJSON.data(using: .utf8),
+                    
+                    // Apply the initial pose animation
+                    if let initialPose = initialPoseData,
+                       let jsonData = try? JSONSerialization.data(withJSONObject: initialPose),
                        let animations: [JointAnimation] = try? JSONDecoder().decode([JointAnimation].self, from: jsonData) {
                         // Apply animation after a brief delay
                         DispatchQueue.main.asyncAfter(deadline: .now()) {
                             rigController.applyJointAnimation(animations)
                         }
+                        
+                        // Save initial pose to backend if needed
+                        if shouldSavePose, let meshId = self.selectedMeshId {
+                            Task {
+                                do {
+                                    try await MeshGenerationService.shared.updateInitialPose(
+                                        meshId: meshId,
+                                        initialPose: initialPose
+                                    )
+                                    print("✅ Successfully saved initial pose to backend for mesh \(meshId)")
+                                } catch {
+                                    print("⚠️ Failed to save initial pose to backend: \(error.localizedDescription)")
+                                }
+                            }
+                        }
                     } else {
-                        print("⚠️ Failed to decode test animation JSON")
-                        // DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                        //     rigController.raiseRightHand()
-                        // }
+                        print("⚠️ Failed to decode initial pose JSON")
                     }
 
                     // // Test: Apply hardcoded joint animation from AI response
