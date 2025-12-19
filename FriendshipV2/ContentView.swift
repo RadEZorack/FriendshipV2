@@ -21,6 +21,8 @@ struct ContentView: View {
     @State private var selectedTab: TabSelection = .ar
     @State private var selectedMeshId: String?
     @State private var showingMeshSelector = false
+    @State private var selectedIKTarget: String?
+    @State private var shouldPlaceAvatar = false
 
     var body: some View {
         Group {
@@ -29,11 +31,16 @@ struct ContentView: View {
                     ZStack {
                         ARViewContainer(
                             isActive: selectedTab == .ar,
-                            selectedMeshId: selectedMeshId
+                            selectedMeshId: selectedMeshId,
+                            selectedIKTarget: $selectedIKTarget,
+                            shouldPlaceAvatar: $shouldPlaceAvatar,
+                            onAvatarPlaced: {
+                                shouldPlaceAvatar = false
+                            }
                         )
                         .edgesIgnoringSafeArea(.all)
                         
-                        // Mesh selector button
+                        // UI Overlay
                         VStack {
                             HStack {
                                 Spacer()
@@ -50,6 +57,53 @@ struct ContentView: View {
                                 .padding()
                             }
                             Spacer()
+                            
+                            // Place Avatar Button
+                            Button(action: {
+                                shouldPlaceAvatar = true
+                            }) {
+                                HStack {
+                                    Image(systemName: "person.crop.circle.badge.plus")
+                                    Text("Place Avatar")
+                                }
+                                .font(.system(size: 16, weight: .semibold))
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 24)
+                                .padding(.vertical, 12)
+                                .background(Color.blue.opacity(0.8))
+                                .cornerRadius(12)
+                            }
+                            .padding(.bottom, 12)
+                            
+                            // IK Target Selection Buttons
+                            HStack(spacing: 12) {
+                                IKTargetButton(
+                                    title: "Head",
+                                    targetName: "head_end",
+                                    selectedTarget: $selectedIKTarget
+                                )
+                                IKTargetButton(
+                                    title: "L Arm",
+                                    targetName: "leftArm_end",
+                                    selectedTarget: $selectedIKTarget
+                                )
+                                IKTargetButton(
+                                    title: "R Arm",
+                                    targetName: "rightArm_end",
+                                    selectedTarget: $selectedIKTarget
+                                )
+                                IKTargetButton(
+                                    title: "L Leg",
+                                    targetName: "leftLeg_end",
+                                    selectedTarget: $selectedIKTarget
+                                )
+                                IKTargetButton(
+                                    title: "R Leg",
+                                    targetName: "rightLeg_end",
+                                    selectedTarget: $selectedIKTarget
+                                )
+                            }
+                            .padding(.bottom, 40)
                         }
                     }
                     .tabItem {
@@ -89,6 +143,9 @@ enum TabSelection {
 struct ARViewContainer: UIViewRepresentable {
     let isActive: Bool
     let selectedMeshId: String?
+    @Binding var selectedIKTarget: String?
+    @Binding var shouldPlaceAvatar: Bool
+    var onAvatarPlaced: (() -> Void)?
     
     func makeUIView(context: Context) -> ARView {
         let arView = ARView(frame: .zero)
@@ -182,11 +239,21 @@ struct ARViewContainer: UIViewRepresentable {
     func makeCoordinator() -> Coordinator {
         let coordinator = Coordinator()
         coordinator.selectedMeshId = selectedMeshId
+        coordinator.selectedIKTarget = selectedIKTarget
+        coordinator.shouldPlaceAvatar = shouldPlaceAvatar
         return coordinator
     }
     
     func updateCoordinator(_ coordinator: Coordinator) {
         coordinator.selectedMeshId = selectedMeshId
+        coordinator.selectedIKTarget = selectedIKTarget
+        coordinator.onAvatarPlaced = onAvatarPlaced
+        
+        // Handle avatar placement trigger
+        if shouldPlaceAvatar && !coordinator.shouldPlaceAvatar {
+            coordinator.placeAvatarAtCenter()
+        }
+        coordinator.shouldPlaceAvatar = shouldPlaceAvatar
     }
     
     func addCrosshair(to arView: ARView) {
@@ -227,6 +294,9 @@ struct ARViewContainer: UIViewRepresentable {
         var arConfig: ARWorldTrackingConfiguration?
         var isPaused: Bool = false
         var selectedMeshId: String?
+        var selectedIKTarget: String?
+        var shouldPlaceAvatar: Bool = false
+        var onAvatarPlaced: (() -> Void)?
         
         func loadMeshUSDZ(meshId: String) async -> URL? {
             do {
@@ -265,19 +335,115 @@ struct ARViewContainer: UIViewRepresentable {
             // Perform a raycast from the center of the screen
             let results = arView.raycast(from: centerPoint, allowing: .estimatedPlane, alignment: .any)
             
+            var raycastTransform: simd_float4x4?
+            
             // If no results from plane detection, try using existing plane anchors
             if results.isEmpty {
                 // Try raycasting against existing scene geometry
                 if let raycastQuery = arView.makeRaycastQuery(from: centerPoint, allowing: .existingPlaneGeometry, alignment: .any) {
                     let raycastResults = arView.session.raycast(raycastQuery)
                     if let firstResult = raycastResults.first {
-                        placeModel(at: firstResult.worldTransform, in: arView)
-                        return
+                        raycastTransform = firstResult.worldTransform
                     }
                 }
             } else if let firstResult = results.first {
-                placeModel(at: firstResult.worldTransform, in: arView)
+                raycastTransform = firstResult.worldTransform
             }
+            
+            guard let transform = raycastTransform else {
+                return
+            }
+            
+            // If avatar is already placed and an IK target is selected, move the target
+            if let rigController = avatarRigController,
+               let targetName = selectedIKTarget {
+                moveIKTarget(targetName: targetName, to: transform, in: arView, rigController: rigController)
+            }
+            // Otherwise, do nothing (avatar placement is handled by the button)
+        }
+        
+        func placeAvatarAtCenter() {
+            guard let arView = arView,
+                  arView.session.configuration != nil else {
+                return
+            }
+            
+            // Get the center point of the screen
+            let centerPoint = CGPoint(x: arView.bounds.midX, y: arView.bounds.midY)
+            
+            // Perform a raycast from the center of the screen
+            let results = arView.raycast(from: centerPoint, allowing: .estimatedPlane, alignment: .any)
+            
+            var raycastTransform: simd_float4x4?
+            
+            // If no results from plane detection, try using existing plane anchors
+            if results.isEmpty {
+                // Try raycasting against existing scene geometry
+                if let raycastQuery = arView.makeRaycastQuery(from: centerPoint, allowing: .existingPlaneGeometry, alignment: .any) {
+                    let raycastResults = arView.session.raycast(raycastQuery)
+                    if let firstResult = raycastResults.first {
+                        raycastTransform = firstResult.worldTransform
+                    }
+                }
+            } else if let firstResult = results.first {
+                raycastTransform = firstResult.worldTransform
+            }
+            
+            if let transform = raycastTransform {
+                placeModel(at: transform, in: arView)
+            } else {
+                print("⚠️ Could not find a surface to place avatar")
+            }
+        }
+        
+        func moveIKTarget(targetName: String, to worldTransform: simd_float4x4, in arView: ARView, rigController: AvatarRigController) {
+            guard let anchor = placedAnchor else {
+                print("⚠️ No anchor found, cannot move IK target")
+                return
+            }
+            
+            // Get the target entity
+            let target = rigController.targetController.target(named: targetName)
+            
+            // Create a temporary entity at the world transform position
+            let worldEntity = Entity()
+            worldEntity.transform = Transform(matrix: worldTransform)
+            
+            // Convert world transform to anchor's local space
+            // Get the anchor's inverse transform to convert from world to local
+            let anchorWorldTransform = anchor.transformMatrix(relativeTo: nil)
+            let anchorInverseTransform = anchorWorldTransform.inverse
+            
+            // Multiply world transform by anchor's inverse to get local transform
+            let localTransformMatrix = anchorInverseTransform * worldTransform
+            
+            // Convert to Transform
+            let localTransform = Transform(matrix: localTransformMatrix)
+            
+            // Keep the current rotation and scale, only update position
+            let currentTransform = target.transform
+            let newTransform = Transform(
+                scale: currentTransform.scale,
+                rotation: currentTransform.rotation,
+                translation: localTransform.translation
+            )
+            
+            // Update target transform
+            target.transform = newTransform
+            
+            // Update IK constraint target
+            guard var ikComponent = placedModel?.components[IKComponent.self] else {
+                print("⚠️ No IKComponent found")
+                return
+            }
+            
+            if var constraint = ikComponent.solvers[0].constraints[targetName] {
+                constraint.target = newTransform
+                ikComponent.solvers[0].constraints[targetName] = constraint
+                placedModel?.components.set(ikComponent)
+            }
+            
+            print("✅ Moved IK target \(targetName) to raycast intersection at \(localTransform.translation)")
         }
         
         func placeModel(at transform: simd_float4x4, in arView: ARView) {
@@ -447,6 +613,11 @@ struct ARViewContainer: UIViewRepresentable {
                     
                     // Store rig controller
                     self.avatarRigController = rigController
+                    
+                    // Call the callback to reset the placement flag
+                    DispatchQueue.main.async {
+                        self.onAvatarPlaced?()
+                    }
 
                     // DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                     //     rigController.raiseRightHand()
@@ -526,7 +697,7 @@ struct ARViewContainer: UIViewRepresentable {
                     let startingAnimationJSON = """
                     [
                     {
-                      "duration": 1.0,
+                      "duration": 0.0,
                       "space": "local",
                       "changes": {
                         "head_end": [
@@ -622,6 +793,40 @@ struct ARViewContainer: UIViewRepresentable {
         func session(_ session: ARSession, didUpdate frame: ARFrame) {
             // Optionally, you could continuously update cube position here
             // based on depth data from the center of the screen
+        }
+    }
+}
+
+// IK Target Selection Button
+struct IKTargetButton: View {
+    let title: String
+    let targetName: String
+    @Binding var selectedTarget: String?
+    
+    var isSelected: Bool {
+        selectedTarget == targetName
+    }
+    
+    var body: some View {
+        Button(action: {
+            // Toggle selection
+            if selectedTarget == targetName {
+                selectedTarget = nil
+            } else {
+                selectedTarget = targetName
+            }
+        }) {
+            Text(title)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundColor(isSelected ? .black : .white)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+                .background(isSelected ? Color.white : Color.black.opacity(0.6))
+                .cornerRadius(8)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(isSelected ? Color.white : Color.clear, lineWidth: 2)
+                )
         }
     }
 }
