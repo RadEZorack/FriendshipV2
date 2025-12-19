@@ -425,7 +425,7 @@ struct ARViewContainer: UIViewRepresentable {
             let newTransform = Transform(
                 scale: currentTransform.scale,
                 rotation: currentTransform.rotation,
-                translation: localTransform.translation
+                translation: [localTransform.translation.x * 100.0, -localTransform.translation.z * 100.0, localTransform.translation.y * 100.0]
             )
             
             // Update target transform
@@ -542,40 +542,40 @@ struct ARViewContainer: UIViewRepresentable {
                     let leftArmLimb = IKLimb(
                         baseJoint: "Hips/Spine02/Spine01/Spine/LeftShoulder/LeftArm",
                         endJoint: "Hips/Spine02/Spine01/Spine/LeftShoulder/LeftArm/LeftForeArm/LeftHand",
-                        baseWeight: [0.8, 0.8, 0.8],
+                        baseWeight: [0.0, 0.0, 0.0],
                         endPositionWeight: [1.0, 1.0, 1.0],
-                        endOrientationWeight: [0.4, 0.4, 0.4]
+                        endOrientationWeight: [0.0, 0.0, 0.0]
                     )
                     
                     // Define the right arm limb for IK
                     let rightArmLimb = IKLimb(
                         baseJoint: "Hips/Spine02/Spine01/Spine/RightShoulder/RightArm",
                         endJoint: "Hips/Spine02/Spine01/Spine/RightShoulder/RightArm/RightForeArm/RightHand",
-                        baseWeight: [0.8, 0.8, 0.8],
+                        baseWeight: [0.0, 0.0, 0.0],
                         endPositionWeight: [1.0, 1.0, 1.0],
-                        endOrientationWeight: [0.4, 0.4, 0.4]
+                        endOrientationWeight: [0.0, 0.0, 0.0]
                     )
 
                     let leftLegLimb = IKLimb(
                         baseJoint: "Hips/LeftUpLeg",
                         endJoint: "Hips/LeftUpLeg/LeftLeg/LeftFoot",
-                        baseWeight: [0.8, 0.8, 0.8],
+                        baseWeight: [0.0, 0.0, 0.0],
                         endPositionWeight: [1.0, 1.0, 1.0],
-                        endOrientationWeight: [0.3, 0.3, 0.3]
+                        endOrientationWeight: [0.0, 0.0, 0.0]
                     )
                     
                     let rightLegLimb = IKLimb(
                         baseJoint: "Hips/RightUpLeg",
                         endJoint: "Hips/RightUpLeg/RightLeg/RightFoot",
-                        baseWeight: [0.8, 0.8, 0.8],
+                        baseWeight: [0.0, 0.0, 0.0],
                         endPositionWeight: [1.0, 1.0, 1.0],
-                        endOrientationWeight: [0.3, 0.3, 0.3]
+                        endOrientationWeight: [0.0, 0.0, 0.0]
                     )
 
                     let headLimb = IKLimb(
                         baseJoint: "Hips/Spine02/Spine01/Spine/neck",
                         endJoint: "Hips/Spine02/Spine01/Spine/neck/Head/headfront",
-                        baseWeight: [0.6, 0.6, 0.6],
+                        baseWeight: [0.0, 0.0, 0.0],
                         endPositionWeight: [0.4, 0.4, 0.4],
                         endOrientationWeight: [1.0, 1.0, 1.0] // orientation matters most
                     )
