@@ -737,6 +737,97 @@ struct ARViewContainer: UIViewRepresentable {
                     print("⚠️ Failed to update pose in database: \(error.localizedDescription)")
                 }
             }
+            
+            // If avatar is already placed and an IK target is selected, move the target
+            if let rigController = avatarRigController,
+               let targetName = selectedIKTarget {
+                moveIKTarget(targetName: targetName, to: transform, in: arView, rigController: rigController)
+            }
+            // Otherwise, do nothing (avatar placement is handled by the button)
+        }
+        
+        func placeAvatarAtCenter() {
+            guard let arView = arView,
+                  arView.session.configuration != nil else {
+                return
+            }
+            
+            // Get the center point of the screen
+            let centerPoint = CGPoint(x: arView.bounds.midX, y: arView.bounds.midY)
+            
+            // Perform a raycast from the center of the screen
+            let results = arView.raycast(from: centerPoint, allowing: .estimatedPlane, alignment: .any)
+            
+            var raycastTransform: simd_float4x4?
+            
+            // If no results from plane detection, try using existing plane anchors
+            if results.isEmpty {
+                // Try raycasting against existing scene geometry
+                if let raycastQuery = arView.makeRaycastQuery(from: centerPoint, allowing: .existingPlaneGeometry, alignment: .any) {
+                    let raycastResults = arView.session.raycast(raycastQuery)
+                    if let firstResult = raycastResults.first {
+                        raycastTransform = firstResult.worldTransform
+                    }
+                }
+            } else if let firstResult = results.first {
+                raycastTransform = firstResult.worldTransform
+            }
+            
+            if let transform = raycastTransform {
+                placeModel(at: transform, in: arView)
+            } else {
+                print("⚠️ Could not find a surface to place avatar")
+            }
+        }
+        
+        func moveIKTarget(targetName: String, to worldTransform: simd_float4x4, in arView: ARView, rigController: AvatarRigController) {
+            guard let anchor = placedAnchor else {
+                print("⚠️ No anchor found, cannot move IK target")
+                return
+            }
+            
+            // Get the target entity
+            let target = rigController.targetController.target(named: targetName)
+            
+            // Create a temporary entity at the world transform position
+            let worldEntity = Entity()
+            worldEntity.transform = Transform(matrix: worldTransform)
+            
+            // Convert world transform to anchor's local space
+            // Get the anchor's inverse transform to convert from world to local
+            let anchorWorldTransform = anchor.transformMatrix(relativeTo: nil)
+            let anchorInverseTransform = anchorWorldTransform.inverse
+            
+            // Multiply world transform by anchor's inverse to get local transform
+            let localTransformMatrix = anchorInverseTransform * worldTransform
+            
+            // Convert to Transform
+            let localTransform = Transform(matrix: localTransformMatrix)
+            
+            // Keep the current rotation and scale, only update position
+            let currentTransform = target.transform
+            let newTransform = Transform(
+                scale: currentTransform.scale,
+                rotation: currentTransform.rotation,
+                translation: [localTransform.translation.x * 100.0, -localTransform.translation.z * 100.0, localTransform.translation.y * 100.0]
+            )
+            
+            // Update target transform
+            target.transform = newTransform
+            
+            // Update IK constraint target
+            guard var ikComponent = placedModel?.components[IKComponent.self] else {
+                print("⚠️ No IKComponent found")
+                return
+            }
+            
+            if var constraint = ikComponent.solvers[0].constraints[targetName] {
+                constraint.target = newTransform
+                ikComponent.solvers[0].constraints[targetName] = constraint
+                placedModel?.components.set(ikComponent)
+            }
+            
+            print("✅ Moved IK target \(targetName) to raycast intersection at \(localTransform.translation)")
         }
         
         func placeModel(at transform: simd_float4x4, in arView: ARView) {
