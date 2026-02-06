@@ -23,103 +23,16 @@ struct ContentView: View {
     @State private var showingMeshSelector = false
     @State private var selectedIKTarget: String?
     @State private var shouldPlaceAvatar = false
+    @State private var keyframes: [[String: Any]] = []
+    @State private var showingAddKeyframe = false
+    @State private var keyframeDuration: String = "1.0"
+    @State private var selectedKeyframeIndex: Int? = nil
+    @State private var shouldAddKeyframe = false
 
     var body: some View {
         Group {
             if auth.isAuthenticated {
-                TabView(selection: $selectedTab) {
-                    ZStack {
-                        ARViewContainer(
-                            isActive: selectedTab == .ar,
-                            selectedMeshId: selectedMeshId,
-                            selectedIKTarget: $selectedIKTarget,
-                            shouldPlaceAvatar: $shouldPlaceAvatar,
-                            onAvatarPlaced: {
-                                shouldPlaceAvatar = false
-                            }
-                        )
-                        .edgesIgnoringSafeArea(.all)
-                        
-                        // UI Overlay
-                        VStack {
-                            HStack {
-                                Spacer()
-                                Button(action: {
-                                    showingMeshSelector = true
-                                }) {
-                                    Image(systemName: "person.3.fill")
-                                        .font(.title2)
-                                        .foregroundColor(.white)
-                                        .padding()
-                                        .background(Color.black.opacity(0.6))
-                                        .clipShape(Circle())
-                                }
-                                .padding()
-                            }
-                            Spacer()
-                            
-                            // Place Avatar Button
-                            Button(action: {
-                                shouldPlaceAvatar = true
-                            }) {
-                                HStack {
-                                    Image(systemName: "person.crop.circle.badge.plus")
-                                    Text("Place Avatar")
-                                }
-                                .font(.system(size: 16, weight: .semibold))
-                                .foregroundColor(.white)
-                                .padding(.horizontal, 24)
-                                .padding(.vertical, 12)
-                                .background(Color.blue.opacity(0.8))
-                                .cornerRadius(12)
-                            }
-                            .padding(.bottom, 12)
-                            
-                            // IK Target Selection Buttons
-                            HStack(spacing: 12) {
-                                IKTargetButton(
-                                    title: "Head",
-                                    targetName: "head_end",
-                                    selectedTarget: $selectedIKTarget
-                                )
-                                IKTargetButton(
-                                    title: "L Arm",
-                                    targetName: "leftArm_end",
-                                    selectedTarget: $selectedIKTarget
-                                )
-                                IKTargetButton(
-                                    title: "R Arm",
-                                    targetName: "rightArm_end",
-                                    selectedTarget: $selectedIKTarget
-                                )
-                                IKTargetButton(
-                                    title: "L Leg",
-                                    targetName: "leftLeg_end",
-                                    selectedTarget: $selectedIKTarget
-                                )
-                                IKTargetButton(
-                                    title: "R Leg",
-                                    targetName: "rightLeg_end",
-                                    selectedTarget: $selectedIKTarget
-                                )
-                            }
-                            .padding(.bottom, 40)
-                        }
-                    }
-                    .tabItem {
-                        Label("AR", systemImage: "arkit")
-                    }
-                    .tag(TabSelection.ar)
-                    .sheet(isPresented: $showingMeshSelector) {
-                        MeshSelectorView(selectedMeshId: $selectedMeshId)
-                    }
-                    
-                    AvatarGeneratorView()
-                        .tabItem {
-                            Label("Avatar", systemImage: "person.fill")
-                        }
-                        .tag(TabSelection.avatar)
-                }
+                mainTabView
             } else {
                 LoginView()
             }
@@ -131,6 +44,201 @@ struct ContentView: View {
             if auth.isAuthenticated {
                 try? await meshService.fetchUserAvatars()
             }
+        }
+    }
+    
+    private var mainTabView: some View {
+        TabView(selection: $selectedTab) {
+            arTabView
+                .tabItem {
+                    Label("AR", systemImage: "arkit")
+                }
+                .tag(TabSelection.ar)
+                .sheet(isPresented: $showingMeshSelector) {
+                    MeshSelectorView(selectedMeshId: $selectedMeshId)
+                }
+            
+            AvatarGeneratorView()
+                .tabItem {
+                    Label("Avatar", systemImage: "person.fill")
+                }
+                .tag(TabSelection.avatar)
+        }
+    }
+    
+    private var arTabView: some View {
+        ZStack {
+            ARViewContainer(
+                isActive: selectedTab == .ar,
+                selectedMeshId: selectedMeshId,
+                selectedIKTarget: $selectedIKTarget,
+                shouldPlaceAvatar: $shouldPlaceAvatar,
+                keyframes: $keyframes,
+                selectedKeyframeIndex: $selectedKeyframeIndex,
+                keyframeDuration: keyframeDuration,
+                shouldAddKeyframe: $shouldAddKeyframe,
+                onAvatarPlaced: {
+                    shouldPlaceAvatar = false
+                }
+            )
+            .edgesIgnoringSafeArea(.all)
+            
+            arOverlayView
+        }
+        .sheet(isPresented: $showingAddKeyframe) {
+            AddKeyframeView(
+                duration: $keyframeDuration,
+                onAdd: { duration in
+                    // Close sheet first, then trigger keyframe addition
+                    showingAddKeyframe = false
+                    // Small delay to ensure sheet is dismissed before adding
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                        shouldAddKeyframe = true
+                    }
+                },
+                onCancel: {
+                    showingAddKeyframe = false
+                }
+            )
+        }
+    }
+    
+    private var arOverlayView: some View {
+        VStack {
+            topButtonsView
+            Spacer()
+            bottomControlsView
+        }
+    }
+    
+    private var topButtonsView: some View {
+        HStack {
+            Spacer()
+            Button(action: {
+                showingMeshSelector = true
+            }) {
+                Image(systemName: "person.3.fill")
+                    .font(.title2)
+                    .foregroundColor(.white)
+                    .padding()
+                    .background(Color.black.opacity(0.6))
+                    .clipShape(Circle())
+            }
+            .padding()
+        }
+    }
+    
+    private var bottomControlsView: some View {
+        VStack(spacing: 12) {
+            placeAvatarButton
+            ikTargetButtons
+            keyframeControls
+        }
+        .padding(.bottom, 40)
+    }
+    
+    private var placeAvatarButton: some View {
+        Button(action: {
+            shouldPlaceAvatar = true
+        }) {
+            HStack {
+                Image(systemName: "person.crop.circle.badge.plus")
+                Text("Place Avatar")
+            }
+            .font(.system(size: 16, weight: .semibold))
+            .foregroundColor(.white)
+            .padding(.horizontal, 24)
+            .padding(.vertical, 12)
+            .background(Color.blue.opacity(0.8))
+            .cornerRadius(12)
+        }
+        .padding(.bottom, 12)
+    }
+    
+    private var ikTargetButtons: some View {
+        HStack(spacing: 12) {
+            IKTargetButton(
+                title: "Head",
+                targetName: "head_end",
+                selectedTarget: $selectedIKTarget
+            )
+            IKTargetButton(
+                title: "L Arm",
+                targetName: "leftArm_end",
+                selectedTarget: $selectedIKTarget
+            )
+            IKTargetButton(
+                title: "R Arm",
+                targetName: "rightArm_end",
+                selectedTarget: $selectedIKTarget
+            )
+            IKTargetButton(
+                title: "L Leg",
+                targetName: "leftLeg_end",
+                selectedTarget: $selectedIKTarget
+            )
+            IKTargetButton(
+                title: "R Leg",
+                targetName: "rightLeg_end",
+                selectedTarget: $selectedIKTarget
+            )
+        }
+        .padding(.bottom, 12)
+    }
+    
+    @ViewBuilder
+    private var keyframeControls: some View {
+        if selectedMeshId != nil {
+            VStack(spacing: 8) {
+                keyframeDropdown
+                addKeyframeButton
+            }
+            .padding(.horizontal)
+        }
+    }
+    
+    @ViewBuilder
+    private var keyframeDropdown: some View {
+        if !keyframes.isEmpty {
+            HStack {
+                Text("Keyframe:")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundColor(.white)
+                
+                Picker("", selection: $selectedKeyframeIndex) {
+                    Text("None").tag(Int?.none)
+                    ForEach(0..<keyframes.count, id: \.self) { index in
+                        Text("Keyframe \(index + 1) (\(keyframes[index]["duration"] as? Double ?? 0.0)s)")
+                            .tag(Int?.some(index))
+                    }
+                }
+                .pickerStyle(MenuPickerStyle())
+                .foregroundColor(.white)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(Color.black.opacity(0.6))
+                .cornerRadius(8)
+            }
+        }
+    }
+    
+    private var addKeyframeButton: some View {
+        Button(action: {
+            // Present sheet asynchronously to avoid blocking
+            DispatchQueue.main.async {
+                showingAddKeyframe = true
+            }
+        }) {
+            HStack {
+                Image(systemName: "plus.circle.fill")
+                Text("Add Keyframe")
+            }
+            .font(.system(size: 14, weight: .semibold))
+            .foregroundColor(.white)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .background(Color.green.opacity(0.8))
+            .cornerRadius(8)
         }
     }
 }
@@ -145,6 +253,10 @@ struct ARViewContainer: UIViewRepresentable {
     let selectedMeshId: String?
     @Binding var selectedIKTarget: String?
     @Binding var shouldPlaceAvatar: Bool
+    @Binding var keyframes: [[String: Any]]
+    @Binding var selectedKeyframeIndex: Int?
+    let keyframeDuration: String
+    @Binding var shouldAddKeyframe: Bool
     var onAvatarPlaced: (() -> Void)?
     
     func makeUIView(context: Context) -> ARView {
@@ -241,6 +353,16 @@ struct ARViewContainer: UIViewRepresentable {
         coordinator.selectedMeshId = selectedMeshId
         coordinator.selectedIKTarget = selectedIKTarget
         coordinator.shouldPlaceAvatar = shouldPlaceAvatar
+        coordinator.keyframes = keyframes
+        coordinator.selectedKeyframeIndex = selectedKeyframeIndex
+        coordinator.onKeyframesUpdated = { newKeyframes in
+            keyframes = newKeyframes
+        }
+        coordinator.onKeyframeSelected = { index in
+            selectedKeyframeIndex = index
+        }
+        coordinator.shouldAddKeyframe = shouldAddKeyframe
+        coordinator.keyframeDuration = keyframeDuration
         return coordinator
     }
     
@@ -248,12 +370,37 @@ struct ARViewContainer: UIViewRepresentable {
         coordinator.selectedMeshId = selectedMeshId
         coordinator.selectedIKTarget = selectedIKTarget
         coordinator.onAvatarPlaced = onAvatarPlaced
+        coordinator.keyframes = keyframes
+        coordinator.selectedKeyframeIndex = selectedKeyframeIndex
         
         // Handle avatar placement trigger
         if shouldPlaceAvatar && !coordinator.shouldPlaceAvatar {
             coordinator.placeAvatarAtCenter()
         }
         coordinator.shouldPlaceAvatar = shouldPlaceAvatar
+        
+        // Handle keyframe selection
+        if let index = selectedKeyframeIndex, index < keyframes.count, index != coordinator.lastAppliedKeyframeIndex {
+            coordinator.applyKeyframe(at: index)
+            coordinator.lastAppliedKeyframeIndex = index
+        }
+        
+        // Handle add keyframe request
+        if shouldAddKeyframe && !coordinator.shouldAddKeyframe {
+            if let duration = Double(keyframeDuration), duration > 0,
+               let rigController = coordinator.avatarRigController {
+                // Add keyframe asynchronously to avoid blocking
+                Task { @MainActor in
+                    coordinator.addKeyframe(rigController: rigController, duration: duration)
+                    shouldAddKeyframe = false
+                }
+            } else {
+                // Reset flag if we can't add (no rig controller yet)
+                shouldAddKeyframe = false
+            }
+        }
+        coordinator.shouldAddKeyframe = shouldAddKeyframe
+        coordinator.keyframeDuration = keyframeDuration
     }
     
     func addCrosshair(to arView: ARView) {
@@ -297,8 +444,17 @@ struct ARViewContainer: UIViewRepresentable {
         var selectedIKTarget: String?
         var shouldPlaceAvatar: Bool = false
         var onAvatarPlaced: (() -> Void)?
+        var currentMesh: MeshStatus?  // Store the current mesh data
+        var keyframes: [[String: Any]] = []
+        var selectedKeyframeIndex: Int? = nil
+        var onKeyframesUpdated: (([[String: Any]]) -> Void)?
+        var onKeyframeSelected: ((Int?) -> Void)?
+        var pendingKeyframeDuration: Double? = nil  // Duration for next keyframe to add
+        var lastAppliedKeyframeIndex: Int? = nil
+        var shouldAddKeyframe: Bool = false
+        var keyframeDuration: String = "1.0"
         
-        func loadMeshUSDZ(meshId: String) async -> URL? {
+        func loadMeshUSDZ(meshId: String) async -> (url: URL?, mesh: MeshStatus?) {
             do {
                 // Fetch mesh details
                 let mesh = try await MeshGenerationService.shared.fetchMesh(meshId: meshId)
@@ -307,7 +463,7 @@ struct ARViewContainer: UIViewRepresentable {
                 guard let usdzUrlString = mesh.animationUsdzUrl,
                       let usdzURL = URL(string: usdzUrlString) else {
                     print("⚠️ Mesh \(meshId) does not have a USDZ URL")
-                    return nil
+                    return (nil, mesh)
                 }
                 
                 // Download and cache the USDZ file
@@ -315,10 +471,10 @@ struct ARViewContainer: UIViewRepresentable {
                 let cachedURL = try await FileCacheService.shared.downloadAndCache(url: usdzURL, filename: filename)
                 
                 print("✅ Loaded mesh USDZ from cache: \(cachedURL.path)")
-                return cachedURL
+                return (cachedURL, mesh)
             } catch {
                 print("❌ Failed to load mesh USDZ: \(error.localizedDescription)")
-                return nil
+                return (nil, nil)
             }
         }
         
@@ -444,6 +600,234 @@ struct ARViewContainer: UIViewRepresentable {
             }
             
             print("✅ Moved IK target \(targetName) to raycast intersection at \(localTransform.translation)")
+            
+            // Save updated pose to database
+            saveCurrentPoseToDatabase(rigController: rigController)
+        }
+        
+        /// Captures the current pose from all IK targets
+        func captureCurrentPose(rigController: AvatarRigController) -> [String: [[Double]]] {
+            // Get all end targets (these are the ones we care about for the initial pose)
+            let endTargetNames = ["head_end", "leftArm_end", "rightArm_end", "leftLeg_end", "rightLeg_end"]
+            var changes: [String: [[Double]]] = [:]
+            
+            // Capture current transforms for each end target
+            for targetName in endTargetNames {
+                let target = rigController.targetController.target(named: targetName)
+                let transform = target.transform
+                let matrix = transform.matrix
+                
+                // Convert simd_float4x4 to 2D array format
+                let matrixArray: [[Double]] = [
+                    [Double(matrix.columns.0.x), Double(matrix.columns.0.y), Double(matrix.columns.0.z), Double(matrix.columns.0.w)],
+                    [Double(matrix.columns.1.x), Double(matrix.columns.1.y), Double(matrix.columns.1.z), Double(matrix.columns.1.w)],
+                    [Double(matrix.columns.2.x), Double(matrix.columns.2.y), Double(matrix.columns.2.z), Double(matrix.columns.2.w)],
+                    [Double(matrix.columns.3.x), Double(matrix.columns.3.y), Double(matrix.columns.3.z), Double(matrix.columns.3.w)]
+                ]
+                changes[targetName] = matrixArray
+            }
+            
+            return changes
+        }
+        
+        /// Adds a keyframe with the current pose and specified duration
+        func addKeyframe(rigController: AvatarRigController, duration: Double) {
+            guard let meshId = self.selectedMeshId else {
+                print("⚠️ No mesh ID selected, cannot add keyframe")
+                return
+            }
+            
+            let changes = captureCurrentPose(rigController: rigController)
+            
+            // Create the keyframe
+            let keyframe: [String: Any] = [
+                "duration": duration,
+                "space": "local",
+                "changes": changes
+            ]
+            
+            // Add to keyframes array
+            var updatedKeyframes = keyframes
+            updatedKeyframes.append(keyframe)
+            
+            // Update UI on main thread
+            DispatchQueue.main.async { [weak self] in
+                self?.onKeyframesUpdated?(updatedKeyframes)
+            }
+            
+            // Update local keyframes
+            keyframes = updatedKeyframes
+            
+            // Save all keyframes to database asynchronously
+            Task {
+                do {
+                    try await MeshGenerationService.shared.updateInitialPose(
+                        meshId: meshId,
+                        initialPose: updatedKeyframes
+                    )
+                    print("✅ Successfully added keyframe and saved to database for mesh \(meshId)")
+                } catch {
+                    print("⚠️ Failed to save keyframe to database: \(error.localizedDescription)")
+                }
+            }
+        }
+        
+        /// Applies a keyframe at the given index
+        func applyKeyframe(at index: Int) {
+            guard index < keyframes.count,
+                  let rigController = avatarRigController else {
+                print("⚠️ Invalid keyframe index or no rig controller")
+                return
+            }
+            
+            let keyframe = keyframes[index]
+            
+            // Convert keyframe to animation format
+            if let jsonData = try? JSONSerialization.data(withJSONObject: [keyframe]),
+               let animations: [JointAnimation] = try? JSONDecoder().decode([JointAnimation].self, from: jsonData) {
+                // Apply animation
+                DispatchQueue.main.async {
+                    rigController.applyJointAnimation(animations)
+                }
+                print("✅ Applied keyframe \(index + 1)")
+            } else {
+                print("⚠️ Failed to decode keyframe")
+            }
+        }
+        
+        /// Captures the current pose from all IK targets and saves it to the database
+        /// This updates the first keyframe (initial pose) if it exists, otherwise creates it
+        func saveCurrentPoseToDatabase(rigController: AvatarRigController) {
+            guard let meshId = self.selectedMeshId else {
+                print("⚠️ No mesh ID selected, cannot save pose")
+                return
+            }
+            
+            let changes = captureCurrentPose(rigController: rigController)
+            
+            // Update or create first keyframe (initial pose with duration 0.0)
+            if keyframes.isEmpty {
+                // Create initial keyframe
+                keyframes.append([
+                    "duration": 0.0,
+                    "space": "local",
+                    "changes": changes
+                ])
+            } else {
+                // Update first keyframe
+                keyframes[0] = [
+                    "duration": keyframes[0]["duration"] as? Double ?? 0.0,
+                    "space": "local",
+                    "changes": changes
+                ]
+            }
+            
+            // Update UI
+            onKeyframesUpdated?(keyframes)
+            
+            // Save to database asynchronously
+            Task {
+                do {
+                    try await MeshGenerationService.shared.updateInitialPose(
+                        meshId: meshId,
+                        initialPose: keyframes
+                    )
+                    print("✅ Successfully updated pose in database for mesh \(meshId)")
+                } catch {
+                    print("⚠️ Failed to update pose in database: \(error.localizedDescription)")
+                }
+            }
+            
+            // If avatar is already placed and an IK target is selected, move the target
+            if let rigController = avatarRigController,
+               let targetName = selectedIKTarget {
+                moveIKTarget(targetName: targetName, to: transform, in: arView, rigController: rigController)
+            }
+            // Otherwise, do nothing (avatar placement is handled by the button)
+        }
+        
+        func placeAvatarAtCenter() {
+            guard let arView = arView,
+                  arView.session.configuration != nil else {
+                return
+            }
+            
+            // Get the center point of the screen
+            let centerPoint = CGPoint(x: arView.bounds.midX, y: arView.bounds.midY)
+            
+            // Perform a raycast from the center of the screen
+            let results = arView.raycast(from: centerPoint, allowing: .estimatedPlane, alignment: .any)
+            
+            var raycastTransform: simd_float4x4?
+            
+            // If no results from plane detection, try using existing plane anchors
+            if results.isEmpty {
+                // Try raycasting against existing scene geometry
+                if let raycastQuery = arView.makeRaycastQuery(from: centerPoint, allowing: .existingPlaneGeometry, alignment: .any) {
+                    let raycastResults = arView.session.raycast(raycastQuery)
+                    if let firstResult = raycastResults.first {
+                        raycastTransform = firstResult.worldTransform
+                    }
+                }
+            } else if let firstResult = results.first {
+                raycastTransform = firstResult.worldTransform
+            }
+            
+            if let transform = raycastTransform {
+                placeModel(at: transform, in: arView)
+            } else {
+                print("⚠️ Could not find a surface to place avatar")
+            }
+        }
+        
+        func moveIKTarget(targetName: String, to worldTransform: simd_float4x4, in arView: ARView, rigController: AvatarRigController) {
+            guard let anchor = placedAnchor else {
+                print("⚠️ No anchor found, cannot move IK target")
+                return
+            }
+            
+            // Get the target entity
+            let target = rigController.targetController.target(named: targetName)
+            
+            // Create a temporary entity at the world transform position
+            let worldEntity = Entity()
+            worldEntity.transform = Transform(matrix: worldTransform)
+            
+            // Convert world transform to anchor's local space
+            // Get the anchor's inverse transform to convert from world to local
+            let anchorWorldTransform = anchor.transformMatrix(relativeTo: nil)
+            let anchorInverseTransform = anchorWorldTransform.inverse
+            
+            // Multiply world transform by anchor's inverse to get local transform
+            let localTransformMatrix = anchorInverseTransform * worldTransform
+            
+            // Convert to Transform
+            let localTransform = Transform(matrix: localTransformMatrix)
+            
+            // Keep the current rotation and scale, only update position
+            let currentTransform = target.transform
+            let newTransform = Transform(
+                scale: currentTransform.scale,
+                rotation: currentTransform.rotation,
+                translation: [localTransform.translation.x * 100.0, -localTransform.translation.z * 100.0, localTransform.translation.y * 100.0]
+            )
+            
+            // Update target transform
+            target.transform = newTransform
+            
+            // Update IK constraint target
+            guard var ikComponent = placedModel?.components[IKComponent.self] else {
+                print("⚠️ No IKComponent found")
+                return
+            }
+            
+            if var constraint = ikComponent.solvers[0].constraints[targetName] {
+                constraint.target = newTransform
+                ikComponent.solvers[0].constraints[targetName] = constraint
+                placedModel?.components.set(ikComponent)
+            }
+            
+            print("✅ Moved IK target \(targetName) to raycast intersection at \(localTransform.translation)")
         }
         
         func placeModel(at transform: simd_float4x4, in arView: ARView) {
@@ -464,10 +848,14 @@ struct ARViewContainer: UIViewRepresentable {
             Task {
                 do {
                     var modelURL: URL?
+                    var fetchedMesh: MeshStatus? = nil
                     
                     // Try to load from selected mesh first
                     if let meshId = self.selectedMeshId {
-                        modelURL = await self.loadMeshUSDZ(meshId: meshId)
+                        let result = await self.loadMeshUSDZ(meshId: meshId)
+                        modelURL = result.url
+                        fetchedMesh = result.mesh
+                        self.currentMesh = fetchedMesh
                     }
                     
                     // Fallback to bundle file if no mesh selected or loading failed
@@ -694,58 +1082,95 @@ struct ARViewContainer: UIViewRepresentable {
                     // }
                     // ]
                     // """
-                    let startingAnimationJSON = """
-                    [
-                    {
-                      "duration": 0.0,
-                      "space": "local",
-                      "changes": {
-                        "head_end": [
-                          [ 1.0,  0.0,  0.0, 0.0 ],
-                          [ 0.0,  1.0,  0.0, 0.0 ],
-                          [ 0.0,  0.0,  1.0, 0.0 ],
-                          [ 0.0,  0.0,  170.0, 1.0 ]
-                        ],
-                        "leftArm_end": [
-                          [ 1.0,  0.0,  0.0, 0.0 ],
-                          [ 0.0,  1.0,  0.0, 0.0 ],
-                          [ 0.0,  0.0,  1.0, 0.0 ],
-                          [ 70.0,  0.0,  140.0, 1.0 ]
-                        ],
-                        "rightArm_end": [
-                          [ 1.0,  0.0,  0.0, 0.0 ],
-                          [ 0.0,  1.0,  0.0, 0.0 ],
-                          [ 0.0,  0.0,  1.0, 0.0 ],
-                          [ -70.0,  0.0,  140.0, 1.0 ]
-                        ],
-                        "rightLeg_end": [
-                          [ 1.0,  0.0,  0.0, 0.0 ],
-                          [ 0.0,  1.0,  0.0, 0.0 ],
-                          [ 0.0,  0.0,  1.0, 0.0 ],
-                          [ -20.0, 0.0,  0.0, 1.0 ]
-                        ],
-                        "leftLeg_end": [
-                          [ 1.0,  0.0,  0.0, 0.0 ],
-                          [ 0.0,  1.0,  0.0, 0.0 ],
-                          [ 0.0,  0.0,  1.0, 0.0 ],
-                          [ 20.0, 0.0,  0.0, 1.0 ]
-                        ]
-                      }
+                    // Load keyframes from database
+                    if let savedPose = fetchedMesh?.initialPose, !savedPose.isEmpty {
+                        print("✅ Found saved keyframes in database, loading \(savedPose.count) keyframes")
+                        self.keyframes = savedPose
+                        onKeyframesUpdated?(savedPose)
+                    } else {
+                        print("ℹ️ No saved keyframes found, starting with empty array")
+                        self.keyframes = []
+                        onKeyframesUpdated?([])
                     }
-                    ]
-                    """
-
-                    if let jsonData = startingAnimationJSON.data(using: .utf8),
+                    
+                    // Determine which initial pose to use: from DB or default
+                    var initialPoseData: [[String: Any]]? = nil
+                    var shouldSavePose = false
+                    
+                    // First, try to use saved pose from database
+                    if !self.keyframes.isEmpty {
+                        print("✅ Using saved keyframes from database")
+                        initialPoseData = self.keyframes
+                    } else {
+                        // Use default pose and save it
+                        print("ℹ️ No saved pose found, using default and saving to database")
+                        let defaultPose: [[String: Any]] = [
+                            [
+                                "duration": 0.0,
+                                "space": "local",
+                                "changes": [
+                                    "head_end": [
+                                        [1.0, 0.0, 0.0, 0.0],
+                                        [0.0, 1.0, 0.0, 0.0],
+                                        [0.0, 0.0, 1.0, 0.0],
+                                        [0.0, 0.0, 170.0, 1.0]
+                                    ],
+                                    "leftArm_end": [
+                                        [1.0, 0.0, 0.0, 0.0],
+                                        [0.0, 1.0, 0.0, 0.0],
+                                        [0.0, 0.0, 1.0, 0.0],
+                                        [70.0, 0.0, 140.0, 1.0]
+                                    ],
+                                    "rightArm_end": [
+                                        [1.0, 0.0, 0.0, 0.0],
+                                        [0.0, 1.0, 0.0, 0.0],
+                                        [0.0, 0.0, 1.0, 0.0],
+                                        [-70.0, 0.0, 140.0, 1.0]
+                                    ],
+                                    "rightLeg_end": [
+                                        [1.0, 0.0, 0.0, 0.0],
+                                        [0.0, 1.0, 0.0, 0.0],
+                                        [0.0, 0.0, 1.0, 0.0],
+                                        [-20.0, 0.0, 0.0, 1.0]
+                                    ],
+                                    "leftLeg_end": [
+                                        [1.0, 0.0, 0.0, 0.0],
+                                        [0.0, 1.0, 0.0, 0.0],
+                                        [0.0, 0.0, 1.0, 0.0],
+                                        [20.0, 0.0, 0.0, 1.0]
+                                    ]
+                                ]
+                            ]
+                        ]
+                        initialPoseData = defaultPose
+                        shouldSavePose = true
+                    }
+                    
+                    // Apply the initial pose animation
+                    if let initialPose = initialPoseData,
+                       let jsonData = try? JSONSerialization.data(withJSONObject: initialPose),
                        let animations: [JointAnimation] = try? JSONDecoder().decode([JointAnimation].self, from: jsonData) {
                         // Apply animation after a brief delay
                         DispatchQueue.main.asyncAfter(deadline: .now()) {
                             rigController.applyJointAnimation(animations)
                         }
+                        
+                        // Save initial pose to backend if needed
+                        if shouldSavePose, let meshId = self.selectedMeshId {
+                            Task {
+                                do {
+                                    try await MeshGenerationService.shared.updateInitialPose(
+                                        meshId: meshId,
+                                        initialPose: initialPose
+                                    )
+                                    print("✅ Successfully saved initial pose to backend for mesh \(meshId)")
+                                } catch {
+                                    print("⚠️ Failed to save initial pose to backend: \(error.localizedDescription)")
+                                }
+                            }
+                        }
                     } else {
-                        print("⚠️ Failed to decode test animation JSON")
-                        // DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                        //     rigController.raiseRightHand()
-                        // }
+                        print("⚠️ Failed to decode initial pose JSON")
                     }
 
                     // // Test: Apply hardcoded joint animation from AI response
@@ -827,6 +1252,83 @@ struct IKTargetButton: View {
                     RoundedRectangle(cornerRadius: 8)
                         .stroke(isSelected ? Color.white : Color.clear, lineWidth: 2)
                 )
+        }
+    }
+}
+
+// Add Keyframe View
+struct AddKeyframeView: View {
+    @Binding var duration: String
+    let onAdd: (Double) -> Void
+    let onCancel: () -> Void
+    @FocusState private var isDurationFocused: Bool
+    
+    var body: some View {
+        NavigationView {
+            VStack(spacing: 20) {
+                Text("Add Keyframe")
+                    .font(.title2)
+                    .fontWeight(.bold)
+                    .padding(.top)
+                
+                Text("Capture the current pose as a new keyframe")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal)
+                
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Duration (seconds)")
+                        .font(.headline)
+                    
+                    TextField("1.0", text: $duration)
+                        .keyboardType(.decimalPad)
+                        .textFieldStyle(RoundedBorderTextFieldStyle())
+                        .focused($isDurationFocused)
+                    
+                    Text("Time it takes to transition to this pose")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                .padding()
+                
+                Spacer()
+                
+                HStack(spacing: 16) {
+                    Button(action: onCancel) {
+                        Text("Cancel")
+                            .font(.headline)
+                            .foregroundColor(.white)
+                            .frame(maxWidth: .infinity)
+                            .padding()
+                            .background(Color.gray.opacity(0.8))
+                            .cornerRadius(12)
+                    }
+                    
+                    Button(action: {
+                        if let durationValue = Double(duration), durationValue > 0 {
+                            onAdd(durationValue)
+                        }
+                    }) {
+                        HStack {
+                            Image(systemName: "plus.circle.fill")
+                            Text("Add Keyframe")
+                        }
+                        .font(.headline)
+                        .foregroundColor(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding()
+                        .background(Color.green.opacity(0.8))
+                        .cornerRadius(12)
+                    }
+                    .disabled(Double(duration) == nil || Double(duration)! <= 0)
+                }
+                .padding()
+            }
+            .navigationBarTitleDisplayMode(.inline)
+            .onAppear {
+                isDurationFocused = true
+            }
         }
     }
 }

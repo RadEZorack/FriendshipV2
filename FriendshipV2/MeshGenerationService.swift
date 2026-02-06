@@ -166,6 +166,37 @@ final class MeshGenerationService: ObservableObject {
         error = nil
     }
     
+    /// Updates the initial pose (position/rotation) for an avatar
+    func updateInitialPose(meshId: String, initialPose: [[String: Any]]) async throws {
+        let url = backendBaseURL.appendingPathComponent("/api/v1/meshes/\(meshId)/initial-pose")
+        
+        // Convert the array to JSON data
+        let bodyData = try JSONSerialization.data(withJSONObject: initialPose, options: [])
+        
+        let (data, httpResponse) = try await AuthService.shared.makeAuthenticatedRequest(
+            url: url,
+            method: "PUT",
+            body: bodyData
+        )
+        
+        guard (200..<300).contains(httpResponse.statusCode) else {
+            let errorData = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            let errorMessage = errorData?["detail"] as? String ?? "Failed to update initial pose"
+            throw MeshError.backendError(message: errorMessage, statusCode: httpResponse.statusCode)
+        }
+        
+        // Optionally update the current mesh with the response
+        let updatedMesh = try JSONDecoder().decode(MeshStatus.self, from: data)
+        if currentMesh?.id == meshId {
+            currentMesh = updatedMesh
+        }
+        
+        // Also update in userAvatars if it exists there
+        if let index = userAvatars.firstIndex(where: { $0.id == meshId }) {
+            userAvatars[index] = updatedMesh
+        }
+    }
+    
     // MARK: - Private Methods
     
     private func startPolling(meshId: String) {
